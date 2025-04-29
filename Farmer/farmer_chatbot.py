@@ -141,13 +141,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_id not in user_session_data and previous_data:
         if "__resume_prompt" in previous_data:
-            # 🧠 Custom resume message (1-2 completed forms, none in progress)
+            # 🧠 1-2 completed forms, none being incomplete
             case_id = previous_data["__case_id"]
             bio_done = previous_data.get("biosecurity_done", False)
             mort_done = previous_data.get("mortality_done", False)
             health_done = previous_data.get("health_status_done", False)
 
-            prompt = f"📂 You have a previous case in progress (Case ID: *{case_id}*).\n"
+            prompt = f"📂 You have a previous case (Case ID: *{case_id}*).\n"
             prompt += "Please select a form to continue:\n\n"
             keyboard = []
 
@@ -161,19 +161,51 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton("❌ Cancel and Delete This Case", callback_data="cancel_entry")])
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            # Save the case_id so next step knows what to work with
             user_session_data[user_id] = {"__case_id": case_id}
-            await send(prompt, reply_markup=reply_markup)
+            await send(prompt, reply_markup=reply_markup, parse_mode="Markdown")
             return SELECTING_DATA
 
         else:
-            # Regular resume of incomplete form
+            # 🧠 You have a halfway completed form
+            case_id = previous_data["__case_id"]
+            current_form = previous_data["__current_form"]
+
+            # ✅ List completed forms properly (checking non-null fields)
+            completed_forms = get_fully_completed_forms_by_case_id(case_id)
+
+            completed_text = "\n✅ Completed Forms:\n"
+            if completed_forms["biosecurity"]:
+                completed_text += "- 📋 Biosecurity Form\n"
+            if completed_forms["mortality"]:
+                completed_text += "- ☠️ Mortality Form\n"
+            if completed_forms["health_status"]:
+                completed_text += "- ❤️ Health Status Form\n"
+            if not any(completed_forms.values()):
+                completed_text += "- ❌ No completed forms yet\n"
+
+            form_name = {
+                "biosecurity": "📋 Biosecurity Form",
+                "mortality": "☠️ Mortality Form",
+                "health_status": "❤️ Health Status Form"
+            }.get(current_form, "Unknown Form")
+
+            resume_text = f"🔄 You have a saved form in progress!\n\n"
+            resume_text += f"🆔 Case ID: *{case_id}*\n"
+            resume_text += f"📋 Resuming: {form_name}\n"
+            resume_text += completed_text
+
             user_session_data[user_id] = previous_data
-            await send_checklist(user_id, send)
-            return SELECTING_DATA
+
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Resume Progress", callback_data="resume_case")],
+                [InlineKeyboardButton("❌ Cancel and Delete This Case", callback_data="cancel_entry")]
+            ])
+
+            await send(resume_text, reply_markup=keyboard, parse_mode="Markdown")
+            return RESUME_OR_NEW
 
     else:
-        # No resume data
+        # Normal start: no resume detected
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📋 Biosecurity Form", callback_data="form_biosecurity")],
             [InlineKeyboardButton("☠️ Mortality Form", callback_data="form_mortality")],
@@ -181,6 +213,48 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await send("✅ Please select the form you would like to fill:", reply_markup=keyboard)
         return SELECTING_DATA
+      
+def get_fully_completed_forms_by_case_id(case_id):
+    conn = sqlite3.connect("../poultry_data.db")
+    c = conn.cursor()
+
+    completed = {
+        "biosecurity": False,
+        "mortality": False,
+        "health_status": False
+    }
+
+    # Biosecurity form
+    c.execute('''
+        SELECT farm_entry_protocols, disinfectant_used, footbath_availability,
+               protective_clothing, frequency_of_disinfection, biosecurity_breach
+        FROM biosecurity_form WHERE case_id = ?
+    ''', (case_id,))
+    row = c.fetchone()
+    if row and all(field is not None and field != "" for field in row):
+        completed["biosecurity"] = True
+
+    # Mortality form
+    c.execute('''
+        SELECT number_of_deaths, age_group_affected, date_of_first_death, pattern_of_deaths
+        FROM mortality_form WHERE case_id = ?
+    ''', (case_id,))
+    row = c.fetchone()
+    if row and all(field is not None and field != "" for field in row):
+        completed["mortality"] = True
+
+    # Health Status form
+    c.execute('''
+        SELECT general_flock_health, visible_symptoms, feed_water_intake,
+               vaccination_status, other_health_concerns, image_path
+        FROM health_status_form WHERE case_id = ?
+    ''', (case_id,))
+    row = c.fetchone()
+    if row and all(field is not None and field != "" for field in row):
+        completed["health_status"] = True
+
+    conn.close()
+    return completed
     
 async def handle_resume_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -679,16 +753,15 @@ def get_forms_by_case_id(case_id):
     conn.close()
     return completed
 
-# Cancel handler
 async def cancel_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     session_data = user_session_data.get(user_id, {})
     case_id = session_data.get("__case_id")
-    
+
     message = "⚠️ Are you sure you want to cancel?\n\n"
-    message += "The following completed forms linked to this case will be deleted:\n\n"
+    message += "The following *fully completed* forms linked to this case will be deleted:\n\n"
 
     try:
         conn = sqlite3.connect("../poultry_data.db")
@@ -696,17 +769,33 @@ async def cancel_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         forms_deleted = []
 
-        # Check if forms exist with same case_id
-        c.execute('SELECT 1 FROM biosecurity_form WHERE case_id = ?', (case_id,))
-        if c.fetchone():
+        # Check Biosecurity Form (all fields filled)
+        c.execute('''
+            SELECT farm_entry_protocols, disinfectant_used, footbath_availability,
+                   protective_clothing, frequency_of_disinfection, biosecurity_breach
+            FROM biosecurity_form WHERE case_id = ?
+        ''', (case_id,))
+        row = c.fetchone()
+        if row and all(field is not None and field != "" for field in row):
             forms_deleted.append("📋 Biosecurity Form")
 
-        c.execute('SELECT 1 FROM mortality_form WHERE case_id = ?', (case_id,))
-        if c.fetchone():
+        # Check Mortality Form (all fields filled)
+        c.execute('''
+            SELECT number_of_deaths, age_group_affected, date_of_first_death, pattern_of_deaths
+            FROM mortality_form WHERE case_id = ?
+        ''', (case_id,))
+        row = c.fetchone()
+        if row and all(field is not None and field != "" for field in row):
             forms_deleted.append("☠️ Mortality Form")
 
-        c.execute('SELECT 1 FROM health_status_form WHERE case_id = ?', (case_id,))
-        if c.fetchone():
+        # Check Health Status Form (all fields + image filled)
+        c.execute('''
+            SELECT general_flock_health, visible_symptoms, feed_water_intake,
+                   vaccination_status, other_health_concerns, image_path
+            FROM health_status_form WHERE case_id = ?
+        ''', (case_id,))
+        row = c.fetchone()
+        if row and all(field is not None and field != "" for field in row):
             forms_deleted.append("❤️ Health Status Form")
 
         conn.close()
@@ -714,10 +803,10 @@ async def cancel_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if forms_deleted:
             message += "\n".join(forms_deleted)
         else:
-            message += "❌ No completed forms found."
+            message += "❌ No fully completed forms found."
 
     except Exception as e:
-        print(f"❌ Error checking forms: {e}")
+        print(f"❌ Error checking completed forms: {e}")
         message += "⚠️ (Unable to check completed forms.)"
 
     keyboard = InlineKeyboardMarkup([
@@ -921,7 +1010,8 @@ def main():
         states={
             RESUME_OR_NEW: [
                 CallbackQueryHandler(handle_resume_decision, pattern="resume_case"),
-                CallbackQueryHandler(handle_resume_decision, pattern="new_case")
+                CallbackQueryHandler(handle_resume_decision, pattern="new_case"),
+                CallbackQueryHandler(cancel_entry, pattern="^cancel_entry$"),
             ],
             SELECTING_DATA: [
                 CallbackQueryHandler(handle_form_selection, pattern="^form_biosecurity$"),
