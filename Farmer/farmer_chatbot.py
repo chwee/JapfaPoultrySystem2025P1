@@ -594,53 +594,111 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c = conn.cursor()
 
         if current_form == "biosecurity":
-            c.execute('''
-                INSERT INTO biosecurity_form (
-                    case_id, user, farm_entry_protocols, disinfectant_used, footbath_availability,
-                    protective_clothing, frequency_of_disinfection, biosecurity_breach
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                session_data["__case_id"],
-                str(user_id),
-                session_data.get("Farm Entry Protocols", {}).get("value"),
-                session_data.get("Disinfectant Used", {}).get("value"),
-                session_data.get("Footbath Availability", {}).get("value"),
-                session_data.get("Protective Clothing Provided", {}).get("value"),
-                session_data.get("Frequency of Disinfection", {}).get("value"),
-                session_data.get("Biosecurity Breach", {}).get("value")
-            ))
+            # Check if a record already exists for this case_id and user
+            c.execute('SELECT id FROM biosecurity_form WHERE case_id = ? AND user = ?', (session_data["__case_id"], str(user_id)))
+            existing = c.fetchone()
+
+            if existing:
+                c.execute('''
+                    UPDATE biosecurity_form SET
+                        farm_entry_protocols = ?, disinfectant_used = ?, footbath_availability = ?,
+                        protective_clothing = ?, frequency_of_disinfection = ?, biosecurity_breach = ?
+                    WHERE case_id = ? AND user = ?
+                ''', (
+                    session_data.get("Farm Entry Protocols", {}).get("value"),
+                    session_data.get("Disinfectant Used", {}).get("value"),
+                    session_data.get("Footbath Availability", {}).get("value"),
+                    session_data.get("Protective Clothing Provided", {}).get("value"),
+                    session_data.get("Frequency of Disinfection", {}).get("value"),
+                    session_data.get("Biosecurity Breach", {}).get("value"),
+                    session_data["__case_id"],
+                    str(user_id)
+                ))
+            else:
+                c.execute('''
+                    INSERT INTO biosecurity_form (
+                        case_id, user, farm_entry_protocols, disinfectant_used, footbath_availability,
+                        protective_clothing, frequency_of_disinfection, biosecurity_breach
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    session_data["__case_id"],
+                    str(user_id),
+                    session_data.get("Farm Entry Protocols", {}).get("value"),
+                    session_data.get("Disinfectant Used", {}).get("value"),
+                    session_data.get("Footbath Availability", {}).get("value"),
+                    session_data.get("Protective Clothing Provided", {}).get("value"),
+                    session_data.get("Frequency of Disinfection", {}).get("value"),
+                    session_data.get("Biosecurity Breach", {}).get("value")
+                ))
 
         elif current_form == "mortality":
-            c.execute('''
-                INSERT INTO mortality_form (
-                    case_id, user, number_of_deaths, age_group_affected,
-                    date_of_first_death, pattern_of_deaths
-                ) VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                session_data["__case_id"],
-                str(user_id),
-                session_data.get("Number of Deaths", {}).get("value"),
-                session_data.get("Age Group Affected", {}).get("value"),
-                session_data.get("Date of First Death", {}).get("value"),
-                session_data.get("Pattern of Deaths", {}).get("value")
-            ))
+            c.execute('SELECT id FROM mortality_form WHERE case_id = ? AND user = ?', (session_data["__case_id"], str(user_id)))
+            existing = c.fetchone()
+
+            if existing:
+                c.execute('''
+                    UPDATE mortality_form SET
+                        number_of_deaths = ?, age_group_affected = ?, date_of_first_death = ?, pattern_of_deaths = ?
+                    WHERE case_id = ? AND user = ?
+                ''', (
+                    session_data.get("Number of Deaths", {}).get("value"),
+                    session_data.get("Age Group Affected", {}).get("value"),
+                    session_data.get("Date of First Death", {}).get("value"),
+                    session_data.get("Pattern of Deaths", {}).get("value"),
+                    session_data["__case_id"],
+                    str(user_id)
+                ))
+            else:
+                c.execute('''
+                    INSERT INTO mortality_form (
+                        case_id, user, number_of_deaths, age_group_affected,
+                        date_of_first_death, pattern_of_deaths
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    session_data["__case_id"],
+                    str(user_id),
+                    session_data.get("Number of Deaths", {}).get("value"),
+                    session_data.get("Age Group Affected", {}).get("value"),
+                    session_data.get("Date of First Death", {}).get("value"),
+                    session_data.get("Pattern of Deaths", {}).get("value")
+                ))
 
         elif current_form == "health_status":
-            c.execute('''
-                INSERT INTO health_status_form (
-                    case_id, user, general_flock_health, visible_symptoms,
-                    feed_water_intake, vaccination_status, other_health_concerns, image_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                session_data["__case_id"],
-                str(user_id),
-                session_data.get("General Flock Health", {}).get("value"),
-                session_data.get("Visible Symptoms", {}).get("value"),
-                session_data.get("Feed and Water Intake", {}).get("value"),
-                session_data.get("Vaccination Status", {}).get("value"),
-                session_data.get("Other Health Concerns", {}).get("value"),
-                session_data.get("__poultry_image")
-            ))
+            c.execute('SELECT id FROM health_status_form WHERE case_id = ? AND user = ?', (session_data["__case_id"], str(user_id)))
+            existing = c.fetchone()
+            
+            if existing:
+                c.execute('''
+                    UPDATE health_status_form SET
+                        general_flock_health = ?, visible_symptoms = ?, feed_water_intake = ?,
+                        vaccination_status = ?, other_health_concerns = ?, image_path = ?
+                    WHERE case_id = ? AND user = ?
+                ''', (
+                    session_data.get("General Flock Health", {}).get("value"),
+                    session_data.get("Visible Symptoms", {}).get("value"),
+                    session_data.get("Feed and Water Intake", {}).get("value"),
+                    session_data.get("Vaccination Status", {}).get("value"),
+                    session_data.get("Other Health Concerns", {}).get("value"),
+                    session_data.get("__poultry_image"),
+                    session_data["__case_id"],
+                    str(user_id)
+                ))
+            else:
+                c.execute('''
+                    INSERT INTO health_status_form (
+                        case_id, user, general_flock_health, visible_symptoms,
+                        feed_water_intake, vaccination_status, other_health_concerns, image_path
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    session_data["__case_id"],
+                    str(user_id),
+                    session_data.get("General Flock Health", {}).get("value"),
+                    session_data.get("Visible Symptoms", {}).get("value"),
+                    session_data.get("Feed and Water Intake", {}).get("value"),
+                    session_data.get("Vaccination Status", {}).get("value"),
+                    session_data.get("Other Health Concerns", {}).get("value"),
+                    session_data.get("__poultry_image")
+                ))
 
         conn.commit()
         conn.close()
