@@ -3,6 +3,11 @@ import sqlite3
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew
+from crewai.tools import BaseTool
+from collections import defaultdict
+from crewai_tools import NL2SQLTool
+from sqlalchemy import create_engine, text, inspect
+from sqlalchemy.orm import sessionmaker
 
 # Load .env variables
 load_dotenv()
@@ -10,41 +15,96 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 os.environ["CREWAI_TELEMETRY_ENABLED"] = "FALSE"
 
-from Sales.tools import SQLiteTool, NotificationTool
+class SQLiteTool(BaseTool):
+    name: str = "SQLiteTool"
+    description: str = "Run SQL queries against the poultry database."
+    db_path: str
+
+    def __init__(self, db_path: str):
+        super().__init__(db_path=db_path)
+        self.db_path = db_path
+
+    def _run(self, query: str) -> str:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(query)
+                if query.strip().lower().startswith("select"):
+                    rows = cursor.fetchall()
+                    if not rows:
+                        return "No results found."
+                    return "\n".join([str(row) for row in rows])  # Return results as formatted string
+                else:
+                    conn.commit()
+                    return "Query executed successfully."
+        except Exception as e:
+            return f"Error running query: {e}"
+
+    async def _arun(self, query: str) -> str:
+        return self._run(query)
+    
+class PatchedNL2SQLTool(NL2SQLTool):
+    def _fetch_available_tables(self):
+        # Use SQLAlchemy's inspector to get table names in SQLite
+        engine = create_engine(self.db_uri)
+        inspector = inspect(engine)
+        return [{"table_name": name} for name in inspector.get_table_names()]
+
+    def _fetch_all_available_columns(self, table_name):
+        # Use SQLAlchemy inspector to get columns for each table
+        engine = create_engine(self.db_uri)
+        inspector = inspect(engine)
+        columns = inspector.get_columns(table_name)
+        return [{"column_name": col["name"], "data_type": col["type"]} for col in columns]
+
+# Replace this with your schema
+schema = """
+Tables:
+- biosecurity_form(id, case_id, farm_location, breach_type, affected_area, summary, timestamp)
+- mortality_form(id, case_id, number_dead, cause_of_death, summary, timestamp)
+- health_status_form(id, case_id, symptoms_observed, vet_comments, summary, timestamp)
+- issues(id, title, description, farm_name, status, assigned_team, case_id, created_at, updated_at)
+- farmer_problem(id, case_id, problem_description, timestamp)
+"""
+
+nl2sql_tool = PatchedNL2SQLTool(
+    db_uri="sqlite:///poultry_data.db",
+    schema=schema
+)
+
+# NotificationTool
+class NotificationTool(BaseTool):
+    name: str = "NotificationTool"
+    description: str = "Simulates sending notifications to Sales or Technical teams."
+
+    def _run(self, input_text: str) -> str:
+        print(f"[NOTIFICATION]: {input_text}")  # Simulate sending a notification
+        return f"Notification sent: '{input_text}'"
+
+    async def _arun(self, input_text: str) -> str:
+        return self._run(input_text)
 
 sqlite_tool = SQLiteTool(db_path="poultry_data.db")
 notification_tool = NotificationTool()
 
-# Define the format function to format the case summary report
-def format_case_report(biosecurity_data, mortality_data, health_status_data):
-    report = "Case Report:\n\n"
+def fetch_row(q):
+    with sqlite3.connect("poultry_data.db") as conn:
+        cur = conn.cursor()
+        cur.execute(q)
+        return cur.fetchone()
     
-    # Format Biosecurity Form Data
-    if biosecurity_data:
-        report += f"Biosecurity Form: {biosecurity_data[5]} (Location: {biosecurity_data[2]}, Breach Type: {biosecurity_data[3]})\n"
-    else:
-        report += "Biosecurity Form: No data available.\n"
-    
-    # Format Mortality Form Data
-    if mortality_data:
-        report += f"Mortality Form: {mortality_data[4]} (Number Dead: {mortality_data[2]}, Cause: {mortality_data[3]})\n"
-    else:
-        report += "Mortality Form: No data available.\n"
-    
-    # Format Health Status Form Data
-    if health_status_data:
-        report += f"Health Status Form: {health_status_data[4]} (Symptoms: {health_status_data[2]}, Vet Comments: {health_status_data[3]})\n"
-    else:
-        report += "Health Status Form: No data available.\n"
-    
-    return report
+def fetch_all(q):
+    with sqlite3.connect("poultry_data.db") as conn:
+        cur = conn.cursor()
+        cur.execute(q)
+        return cur.fetchall()
 
-# Define Agents
+# AGENTS
 issue_management_agent = Agent(
     role="Issue Management Agent",
     goal="Generate case summaries, form reports, and system statistics.",
     backstory="An expert agent responsible for reviewing cases and forms to help the sales and technical teams.",
-    tools=[sqlite_tool],
+    tools=[sqlite_tool, nl2sql_tool],
     allow_delegation=True,
     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)  # lower temp for more factual outputs
 )
@@ -66,92 +126,144 @@ notification_agent = Agent(
     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)
 )
 
-# Define the Formatting Agent using CrewAI
-# formatting_agent = Agent(
-#     role="Formatting Agent",
-#     goal="Format case summaries, form reports, and system statistics into a readable output.",
-#     backstory="An agent responsible for formatting raw case data into structured and readable summaries for various reports.",
-#     tools=[sqlite_tool],  # This will allow the agent to interact with the database if needed
-#     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)  # This ensures more factual and structured outputs
-# )
+# TASKS
+def generate_individual_case_summary(case_id):
+    bio_data = fetch_row(f"SELECT * FROM biosecurity_form WHERE case_id = {case_id} LIMIT 1;")
+    mort_data = fetch_row(f"SELECT * FROM mortality_form WHERE case_id = {case_id} LIMIT 1;")
+    health_data = fetch_row(f"SELECT * FROM health_status_form WHERE case_id = {case_id} LIMIT 1;")
 
-# Task for Issue Management
-fetch_issue_task = Task(
-    description="Fetch the list of issues based on their open or closed status from the database.",
-    agent=issue_management_agent,
-    expected_output="List of open or closed issues with relevant fields (id, title, status)."
-)
+    raw_data_str = f"""
+    Biosecurity Form: {bio_data}
+    Mortality Form: {mort_data}
+    Health Status Form: {health_data}
+    """
 
-fetch_issue_details_task = Task(
-    description="Fetch detailed information for a selected ID.",
-    agent=issue_management_agent,
-    expected_output="Full details of the issue including description, assigned team, and history."
-)
+    case_summary_task = Task(
+        description=(
+            "For case_id 123, generate a high-level summary of the following forms:\n"
+            f"{raw_data_str}\n\n"
+            "- biosecurity_form\n"
+            "- mortality_form\n"
+            "- health_status_form\n\n"
+            "Format the output exactly like this:\n\n"
+            "Case #<case_id>:\n\n"
+            "Biosecurity Form: <short summary>\n"
+            "Mortality Form: <short summary>\n"
+            "Health Status Form: <short summary>\n"
+            "Do not include any extra commentary, formatting, or explanations."
+        ),
+        agent=issue_management_agent,
+        expected_output="Concise natural language summaries of the forms for case_id 123.",
+        output_file="formatted_case_summary.txt"
+    )
 
-generate_sql_task = Task(
-    description="Generate a valid SQL query based on the provided natural language description of a reporting need.",
-    agent=issue_management_agent,
-    expected_output="A valid SQL query string."
-)
+    crew = Crew(
+    agents=[case_summary_task.agent],
+    tasks=[case_summary_task],
+    verbose=True
+    )
+    return crew.kickoff()
 
-case_summary_task = Task(
-    description="Generate a summary report for case_id 123 using biosecurity_form, mortality_form, and health_status_form.",
-    agent=issue_management_agent,
-    expected_output="A formatted summary report for a given case.",
-    output_file="formatted_case_summary.txt"
-)
+def generate_report_for_forms(case_id):
+    # Fetch each form's data and the farmer problem manually
+    bio_data_full = fetch_row(f"SELECT * FROM biosecurity_form WHERE case_id = {case_id} LIMIT 1;")
+    mort_data_full = fetch_row(f"SELECT * FROM mortality_form WHERE case_id = {case_id} LIMIT 1;")
+    health_data_full = fetch_row(f"SELECT * FROM health_status_form WHERE case_id = {case_id} LIMIT 1;")
+    problem_desc = fetch_row(f"SELECT problem_description FROM farmer_problem WHERE case_id = {case_id} LIMIT 1;")
 
-report_forms_with_farmer_task = Task(
-    description=(
-        "For case_id 123, fetch all fields from:\n"
-        "- biosecurity_form\n"
-        "- mortality_form\n"
-        "- health_status_form\n"
-        "Also fetch the 'problem_description' from the farmer_problem table.\n\n"
-        "Format the output strictly like this:\n\n"
-        "Biosecurity Form for Case #123:\n"
-        "- Field Name 1 — Value 1\n"
-        "- Field Name 2 — Value 2\n"
-        "...\n\n"
-        "Mortality Form for Case #123:\n"
-        "- Field Name 1 — Value 1\n"
-        "...\n\n"
-        "Health Status Form for Case #123:\n"
-        "- Field Name 1 — Value 1\n"
-        "...\n\n"
-        "Farmer's Problem:\n"
-        "<problem_description>\n\n"
-        "Do not include commentary or formatting beyond what's specified."
-    ),
-    agent=issue_management_agent,
-    expected_output="Full detailed listing of forms and farmer comments.",
-    tools=[sqlite_tool],
-    output_file="full_forms_report.txt"
-)
+    full_report_data_str = f"""
+    Biosecurity Form: {bio_data_full}
+    Mortality Form: {mort_data_full}
+    Health Status Form: {health_data_full}
+    Farmer's Problem: {problem_desc[0] if problem_desc else "No problem description found."}
+    """
 
-summary_all_issues_task = Task(
-    description=(
-        "Generate a summary report for all cases in the database.\n"
-        "Fetch and calculate:\n"
-        "- Total number of cases\n"
-        "- Number of Open cases\n"
-        "- Number of Closed cases\n"
-        "- Percentage of cases related to Biosecurity, Mortality, and Health Status\n\n"
-        "Output strictly as:\n\n"
-        "Total Cases: <number>\n"
-        "Open Cases: <number>\n"
-        "Closed Cases: <number>\n"
-        "Percentage of Biosecurity Cases: <number>%\n"
-        "Percentage of Mortality Cases: <number>%\n"
-        "Percentage of Health Status Cases: <number>%\n\n"
-        "No other commentary or lines allowed."
-    ),
-    agent=issue_management_agent,
-    expected_output="A simple count and breakdown of cases in a text format.",
-    tools=[sqlite_tool],
-    output_file="issues_summary.txt"
-)
+    report_forms_with_farmer_task = Task(
+        description=(
+            "Use the following data to generate a report for case_id 123:\n\n"
+            f"{full_report_data_str}\n\n"
+            "Format the output strictly like this (DO NOT wrap the output in triple backticks):\n\n"
+            "Biosecurity Form for Case #123:\n"
+            "- Field Name 1 — Value 1\n"
+            "- Field Name 2 — Value 2\n"
+            "...\n\n"
+            "Mortality Form for Case #123:\n"
+            "- Field Name 1 — Value 1\n"
+            "...\n\n"
+            "Health Status Form for Case #123:\n"
+            "- Field Name 1 — Value 1\n"
+            "...\n\n"
+            "Farmer's Problem:\n"
+            "<problem_description>\n\n"
+            "Do not include commentary, markdown, or formatting beyond what's specified. Do not wrap the output in any code blocks."
+        ),
+        agent=issue_management_agent,
+        expected_output="Full detailed listing of forms and farmer comments, without wrapping the output in triple backticks.",
+        tools=[sqlite_tool],
+        output_file="full_forms_report.txt"
+    )
 
+    crew = Crew(
+    agents=[report_forms_with_farmer_task.agent],
+    tasks=[report_forms_with_farmer_task],
+    verbose=True
+    )
+    return crew.kickoff()
+
+def generate_summary_of_all_issues():
+    total_cases = fetch_row("SELECT COUNT(*) FROM issues;")[0]
+    open_cases = fetch_row("SELECT COUNT(*) FROM issues WHERE status = 'Open';")[0]
+    closed_cases = fetch_row("SELECT COUNT(*) FROM issues WHERE status = 'Closed';")[0]
+
+    # Format using bullet points
+    issue_summary_str = (
+        f"- Total Cases: {total_cases}\n"
+        f"  - Open Cases: {open_cases}\n"
+        f"  - Closed Cases: {closed_cases}\n"
+    )
+
+    # --- Per-Farm Breakdown ---
+    cases = fetch_all("SELECT farm_name, status FROM issues;")
+
+    farm_summary = defaultdict(lambda: {"Total": 0, "Open": 0, "Closed": 0, "Needs Tech Help": 0})
+    for farm_name, status in cases:
+        farm_summary[farm_name]["Total"] += 1
+        if status in farm_summary[farm_name]:
+            farm_summary[farm_name][status] += 1
+
+    # Format farm summary as a monospaced table
+    farm_summary_str = "Case Summary by Farm:\n"
+    farm_summary_str += f"{'Farm Name':<20} {'Total':<6} {'Open':<6} {'Closed':<8} {'Needs Tech Help':<17}\n"
+    farm_summary_str += "-" * 60 + "\n"
+    for farm, counts in farm_summary.items():
+        farm_summary_str += f"{farm:<20} {counts['Total']:<6} {counts['Open']:<6} {counts['Closed']:<8} {counts['Needs Tech Help']:<17}\n"
+
+    # Combine all parts
+    final_report = issue_summary_str + "\n<pre>" + farm_summary_str.strip() + "</pre>"
+
+    summary_all_issues_task = Task(
+        description=(
+            "Here is the pre-fetched issue summary across all farms and statuses:\n\n"
+            f"{final_report}\n\n"
+            "Reprint this report exactly as shown above.\n"
+            "Do not modify the content or formatting.\n"
+            "Your output must include:\n"
+            "- Total, Open, and Closed case counts\n"
+            "- Per-farm breakdown table with case statuses\n"
+            "No additional commentary or explanations are allowed."
+        ),
+        agent=issue_management_agent,
+        expected_output="Full database case summary with farm-level breakdown.",
+        tools=[sqlite_tool],
+        output_file="issues_summary.txt"
+    )
+
+    crew = Crew(
+    agents=[summary_all_issues_task.agent],
+    tasks=[summary_all_issues_task],
+    verbose=True
+    )
+    return crew.kickoff()
 
 # Task for Status Update
 update_issue_status_task = Task(
@@ -170,52 +282,3 @@ send_notification_task = Task(
     agent=notification_agent,
     expected_output="A confirmation that notification was sent to the appropriate team."
 )
-
-def _run(self, query: str) -> str:
-    """Execute the query and return a formatted case report."""
-    # Connect to the database
-    connection = sqlite3.connect(self.db_path)
-    cursor = connection.cursor()
-
-    try:
-        cursor.execute(query)
-        result = cursor.fetchall()
-
-        # Assuming the result contains data for biosecurity, mortality, and health status forms
-        # Call the format_case_report method to generate the formatted report
-        case_report = format_case_report(result[0], result[1], result[2])
-
-        return case_report
-
-    except Exception as e:
-        return f"Error: {e}"
-
-    finally:
-        cursor.close()
-        connection.close()
-
-# Adding this _run method to your agent will enable it to generate a formatted report
-issue_management_agent._run = _run
-
-# Create Crew
-sales_technical_chatbot_crew = Crew(
-    agents=[
-        issue_management_agent,
-        status_update_agent,
-        notification_agent
-    ],
-    tasks=[
-        fetch_issue_task,
-        fetch_issue_details_task,
-        generate_sql_task,
-        case_summary_task,
-        report_forms_with_farmer_task,
-        summary_all_issues_task,
-        update_issue_status_task,
-        send_notification_task
-    ],
-    verbose=True  # You can see detailed logs of what happens
-)
-
-result = sales_technical_chatbot_crew.kickoff()
-print(result)
