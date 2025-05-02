@@ -13,6 +13,7 @@ from telegram.ext import (
     ConversationHandler,
 )
 import uuid
+from farmer_agents import db_init_agent
 
 # States
 SELECTING_DATA, ENTERING_VALUE, UPLOADING_IMAGE, CONFIRMING = range(4)
@@ -70,6 +71,33 @@ FULL_QUESTIONS = {
     "Other Health Concerns": "🤔 *Do you have any other health concerns about the chickens?*\n_(eg: Sudden drop in egg production, feather loss)_"
 }
 
+form_definitions = {
+    "biosecurity_form": {
+        "Farm Entry Protocols": "What protocols are followed before someone can enter the farm? (e.g., Change boots and clothes, wash hands, register name)",
+        "Disinfectant Used": "Which disinfectants do you use regularly? (e.g., Virkon S, bleach solution, iodine)",
+        "Footbath Availability": "Is a footbath provided at all entrances to animal areas? (e.g., Yes / No / Not Reinforced)",
+        "Protective Clothing": "What type of protective clothing is provided for visitors/workers? (e.g., Boots, coveralls, gloves)",
+        "Frequency of Disinfection": "How often are animal enclosures disinfected? (e.g., Daily, once a week, after every batch)",
+        "Biosecurity Breach": "Describe any recent biosecurity incident and your response. (e.g., Visitor entered without footbath, cleaned area immediately and disinfected)"
+    },
+    "mortality_form": {
+        "Number of Deaths": "How many chickens died in the past 7 days? (e.g., 15)",
+        "Age Group Affected": "What age group of the chickens were affected? (e.g., 0–2 weeks, 3–6 weeks, Layers, Breeders)",
+        "Date of First Death": "When did the first death occur? (e.g., 3/4/2024)",
+        "Pattern of Deaths": "Were deaths sudden or gradual over time? (e.g., Sudden / Gradual)"
+    },
+    "health_status_form": {
+        "General Flock Health": "How would you describe the overall health of your flock today? (e.g., Good, Fair, Poor)",
+        "Visible Symptoms": "What are the symptoms you observed? (e.g., Coughing, diarrhea, swollen eyes, weak legs)",
+        "Feed and Water Intake": "Have you noticed any decrease in feed or water consumption? (Yes / No)",
+        "Vaccination Status": "What are the vaccinations the chickens have taken? (e.g., Newcastle disease, Infectious bronchitis)",
+        "Other Health Concerns": "Do you have any other health concerns about the chickens? (e.g., Sudden drop in egg production, feather loss)"
+    },
+    "whip_and_nae_nae": {
+        "yipee": "sigma"
+    }
+}
+
 # In-memory user session data
 user_session_data = {}
 
@@ -78,49 +106,10 @@ def init_db():
     conn = sqlite3.connect("../poultry_data.db")
     print(f"DB Path: {os.path.abspath('../poultry_data.db')}")
     c = conn.cursor()
-    # New Biosecurity Form table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS biosecurity_form (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            case_id TEXT,
-            user TEXT,
-            farm_entry_protocols TEXT,
-            disinfectant_used TEXT,
-            footbath_availability TEXT,
-            protective_clothing TEXT,
-            frequency_of_disinfection TEXT,
-            biosecurity_breach TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # New Mortality Form table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS mortality_form (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            case_id TEXT,
-            user TEXT,
-            number_of_deaths TEXT,
-            age_group_affected TEXT,
-            date_of_first_death TEXT,
-            pattern_of_deaths TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # New Health Status Form table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS health_status_form (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            case_id TEXT,
-            user TEXT,
-            general_flock_health TEXT,
-            visible_symptoms TEXT,
-            feed_water_intake TEXT,
-            vaccination_status TEXT,
-            other_health_concerns TEXT,
-            image_path TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    sql_statements = db_init_agent(form_definitions).split(";")
+    for stmt in sql_statements:
+        if stmt.strip():
+            c.execute(stmt.strip() + ";")
     conn.commit()
     conn.close()
 
