@@ -113,6 +113,7 @@ status_update_agent = Agent(
     role="Status Update Agent",
     goal="Help Sales/Technical team mark issues as 'Closed' or 'Needs Tech Help'.",
     backstory="An expert in updating issue statuses and generating appropriate SQL queries to reflect changes.",
+    tools=[sqlite_tool],
     allow_delegation=False,
     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)
 )
@@ -266,11 +267,76 @@ def generate_summary_of_all_issues():
     return crew.kickoff()
 
 # Task for Status Update
-update_issue_status_task = Task(
-    description="Update the status of an issue in the database to 'Closed' or 'Needs Tech Help' based on user input.",
-    agent=status_update_agent,
-    expected_output="Database updated successfully with new status for the given id."
-)
+def execute_generated_sql(sql: str):
+    conn = sqlite3.connect("poultry_data.db")
+    cursor = conn.cursor()
+    cursor.execute(sql)
+    conn.commit()
+    conn.close()
+
+def execute_generated_sql(sql: str):
+    """Execute a dynamically generated SQL statement."""
+    try:
+        conn = sqlite3.connect("poultry_data.db")
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Error executing SQL: {e}")
+
+def check_case_exists(case_id: str) -> bool:
+    try:
+        # Connect to the SQLite database
+        conn = sqlite3.connect("poultry_data.db")  # Make sure to adjust the path if necessary
+        cursor = conn.cursor()
+        
+        # Check if the case_id exists in your case-related table (assuming 'issues' table here)
+        cursor.execute("SELECT COUNT(*) FROM issues WHERE case_id = ?", (case_id,))
+        result = cursor.fetchone()
+        
+        conn.close()
+        
+        # Return True if the case_id exists, otherwise False
+        return result[0] > 0
+    except Exception as e:
+        print(f"Error checking case ID in DB: {e}")
+        return False
+
+def manually_update_case(case_id: str, reason: str):
+    """Update the status of a case directly in the database."""
+    sql = f"""
+        UPDATE issues 
+        SET status = 'Closed', close_reason = '{reason}' 
+        WHERE case_id = {case_id};
+    """
+    execute_generated_sql(sql)  # Use execute_generated_sql to run the query
+
+def close_case_with_reason(case_id: str, reason: str) -> str:
+    """Close the case with a provided reason."""
+    try:
+        # Manually update the case in the database
+        manually_update_case(case_id, reason)
+        return f"Case {case_id} has been closed successfully with reason: {reason}"
+    except Exception as e:
+        return f"❌ Error: {e}"
+    
+def execute_case_closing(case_id: str, reason: str) -> str:
+    """Close a case using CrewAI's task execution flow."""
+    close_task = Task(
+        description=f"Close case {case_id} with the reason: {reason}",
+        agent=status_update_agent,
+        expected_output="Case closed confirmation",
+        tools=[sqlite_tool],
+        output_file="closed_case_confirmation.txt"
+    )
+
+    crew = Crew(
+        agents=[status_update_agent],
+        tasks=[close_task],
+        verbose=True
+    )
+    return crew.kickoff()
 
 # Task for Notification
 send_notification_task = Task(

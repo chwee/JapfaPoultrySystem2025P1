@@ -47,6 +47,7 @@ def init_db():
                 description TEXT,
                 farm_name TEXT,
                 status TEXT CHECK(status IN ('Open', 'Closed', 'Needs Tech Help')) DEFAULT 'Open',
+                close_reason TEXT,
                 assigned_team TEXT,
                 case_id INTEGER,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

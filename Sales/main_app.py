@@ -8,7 +8,9 @@ from telegram.ext import (
 from crew import (
     generate_individual_case_summary,
     generate_report_for_forms,
-    generate_summary_of_all_issues
+    generate_summary_of_all_issues,
+    close_case_with_reason,
+    check_case_exists
 )
 
 # Setup logging
@@ -27,6 +29,10 @@ def get_main_menu_buttons():
             InlineKeyboardButton("Get Case Summary", callback_data="case_summary"),
             InlineKeyboardButton("Generate Report", callback_data="generate_report"),
             InlineKeyboardButton("View All Issues", callback_data="view_all_issues")
+        ],
+        [
+            InlineKeyboardButton("Close Case", callback_data="close_case"),
+            InlineKeyboardButton("Escalate Case", callback_data="escalate_case")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -49,71 +55,90 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "case_summary":
-        user_state[user_id] = "awaiting_case_summary"
+        user_state[user_id] = {"action": "case_summary", "step": "awaiting_case_id"}
         await query.edit_message_text("📥 Please enter the Case ID for the summary:")
 
     elif query.data == "generate_report":
-        user_state[user_id] = "awaiting_generate_report"
+        user_state[user_id] = {"action": "generate_report", "step": "awaiting_case_id"}
         await query.edit_message_text("📥 Please enter the Case ID for the full report:")
 
     elif query.data == "view_all_issues":
         await query.edit_message_text("🔍 Viewing all issues...")
         try:
             result = generate_summary_of_all_issues()
-            await query.message.reply_text(
-                f"<pre>{result}</pre>",
-                parse_mode="HTML"
-            )
+            await query.message.reply_text(f"<pre>{result}</pre>", parse_mode="HTML")
         except Exception as e:
             await query.message.reply_text(f"❌ Error: {e}")
 
         # Show menu again
-        await query.message.reply_text(
-            "📋 Main Menu: Please choose an option below:",
-            reply_markup=get_main_menu_buttons()
-        )
+        await query.message.reply_text("📋 Main Menu: Please choose an option below:", reply_markup=get_main_menu_buttons())
 
-# Handle text input (case_id responses)
+    elif query.data == "close_case":
+        user_state[user_id] = {"action": "closing_case", "step": "awaiting_case_id"}
+        await query.edit_message_text("📥 Please enter the Case ID for the case you want to close.")
+
+
 async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    case_id = update.message.text.strip()
-
-    if not case_id.isdigit():
-        await update.message.reply_text("❗ Please enter a valid numeric Case ID.")
-        return
+    user_input = update.message.text.strip()
 
     if user_id not in user_state:
         await update.message.reply_text("❓ Please choose an action first using the menu.")
         await show_main_menu(update)
         return
 
-    action = user_state.pop(user_id)
+    state = user_state[user_id]
 
-    try:
-        if action == "awaiting_case_summary":
-            await update.message.reply_text("⏳ Generating case summary...")
-            result = generate_individual_case_summary(int(case_id))
-            await update.message.reply_text(
-                f"<pre>{result}</pre>",
-                parse_mode="HTML"
-            )
+    # Handle action based on user state
+    if state["action"] == "closing_case":
+        if state["step"] == "awaiting_case_id":
+            # Validate Case ID (it should be numeric)
+            if not user_input.isdigit():
+                await update.message.reply_text("❗ Please enter a valid numeric Case ID.")
+                return
+            
+            # Check if the Case ID exists in the database
+            if not check_case_exists(user_input):
+                await update.message.reply_text(f"❌ Case ID {user_input} does not exist, please try again.")
+                return
 
-        elif action == "awaiting_generate_report":
-            await update.message.reply_text("⏳ Generating full report...")
-            result = generate_report_for_forms(int(case_id))
-            await update.message.reply_text(
-                f"<pre>{result}</pre>",
-                parse_mode="HTML"
-            )
+            # Store the Case ID and move to awaiting_reason
+            state["case_id"] = user_input
+            state["step"] = "awaiting_reason"
+            await update.message.reply_text(f"📝 Please provide a reason for closing Case {user_input}:")
 
-        else:
-            await update.message.reply_text("⚠️ Unknown action. Please try again.")
+        elif state["step"] == "awaiting_reason":
+            # No validation needed for the reason
+            reason = user_input
+            await update.message.reply_text(f"⏳ Closing case {state['case_id']}...")
 
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+            try:
+                result = close_case_with_reason(state["case_id"], reason)
+                await update.message.reply_text(f"✅ {result}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error: {e}")
 
-    # Show main menu again after response
-    await show_main_menu(update)
+            # Clear state and return to menu
+            user_state.pop(user_id)
+            await show_main_menu(update)
+
+    elif state["action"] == "case_summary":
+        # Handle case summary generation
+        await update.message.reply_text("⏳ Generating case summary...")
+        result = generate_individual_case_summary(int(user_input))
+        await update.message.reply_text(f"<pre>{result}</pre>", parse_mode="HTML")
+        await show_main_menu(update)
+
+    elif state["action"] == "generate_report":
+        # Handle full report generation
+        await update.message.reply_text("⏳ Generating full report...")
+        result = generate_report_for_forms(int(user_input))
+        await update.message.reply_text(f"<pre>{result}</pre>", parse_mode="HTML")
+        await show_main_menu(update)
+
+    else:
+        await update.message.reply_text("⚠️ Unknown action. Please try again.")
+        await show_main_menu(update)
 
 # Log errors
 async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
