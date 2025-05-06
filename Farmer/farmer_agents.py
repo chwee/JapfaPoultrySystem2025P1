@@ -53,7 +53,7 @@ intent_dict = {
 
 # --- 1. Form Definition ---
 form_definitions = {
-    "biosecurity_form": {
+    "1st_stage": {
         "Farm Entry Protocols": "What protocols are followed before someone can enter the farm? (e.g., Change boots and clothes, wash hands, register name)",
         "Disinfectant Used": "Which disinfectants do you use regularly? (e.g., Virkon S, bleach solution, iodine)",
         "Footbath Availability": "Is a footbath provided at all entrances to animal areas? (e.g., Yes / No / Not Reinforced)",
@@ -61,13 +61,13 @@ form_definitions = {
         "Frequency of Disinfection": "How often are animal enclosures disinfected? (e.g., Daily, once a week, after every batch)",
         "Biosecurity Breach": "Describe any recent biosecurity incident and your response. (e.g., Visitor entered without footbath, cleaned area immediately and disinfected)"
     },
-    "mortality_form": {
+    "2nd_stage": {
         "Number of Deaths": "How many chickens died in the past 7 days? (e.g., 15)",
         "Age Group Affected": "What age group of the chickens were affected? (e.g., 0–2 weeks, 3–6 weeks, Layers, Breeders)",
         "Date of First Death": "When did the first death occur? (e.g., 3/4/2024)",
         "Pattern of Deaths": "Were deaths sudden or gradual over time? (e.g., Sudden / Gradual)"
     },
-    "health_status_form": {
+    "3rd_stage": {
         "General Flock Health": "How would you describe the overall health of your flock today? (e.g., Good, Fair, Poor)",
         "Visible Symptoms": "What are the symptoms you observed? (e.g., Coughing, diarrhea, swollen eyes, weak legs)",
         "Feed and Water Intake": "Have you noticed any decrease in feed or water consumption? (Yes / No)",
@@ -112,6 +112,9 @@ def db_init_agent(form_def):
         - case_id TEXT
         - user TEXT
         - timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        At the end of each table definition, include this constraint:
+        - UNIQUE(case_id, user)
+        
         Use `snake_case` for all field names.
         {format_form_dict(form_def)}
         Return only the SQL statements in one markdown code block""",
@@ -142,7 +145,7 @@ def db_init_agent(form_def):
     return clean_sql
 
 # ================================CREW DYNAMIC SQL GENERATOR=======================================
-def dynamic_sql_agent(user_input):
+def dynamic_sql_agent(intent, form_def):
     def to_sql_field_name(label):
         # Lowercase and replace non-alphanumeric characters with underscores
         return re.sub(r'\W+', '_', label.strip().lower())
@@ -162,7 +165,7 @@ def dynamic_sql_agent(user_input):
             for form, fields in form_defs.items()
         ])
 
-    form_def_text = format_form_schema_text(form_definitions)
+    form_def_text = format_form_schema_text(form_def)
     print(form_def_text)
 
     # 4. Create SQL Agent
@@ -179,7 +182,7 @@ def dynamic_sql_agent(user_input):
     You are an SQL generation agent. Your job is to generate **parameterized SQL** statements to fulfill the following task:
 
     --- USER INPUT ---
-    "{user_input}"
+    "{intent}"
     ------------------
 
     Instructions:
