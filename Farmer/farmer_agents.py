@@ -76,6 +76,29 @@ form_definitions = {
     }
 }
 
+form_definitions_types = {
+    "flock_farm_information": {
+        "Type of Chicken": "TEXT",
+        "Age of Chicken": "INTEGER",
+        "Housing Type": "TEXT",
+        "Number of Affected Flocks/Houses": "INTEGER",
+        "Feed Type": "TEXT",
+        "Environment Information": "TEXT"
+    },
+    "symptoms_performance_data": {
+        "Main Symptoms": "TEXT",
+        "Daily Production Performance": "TEXT",  # Can be JSON or text-encoded data
+        "Pattern of Spread or Drop": "TEXT"
+    },
+    "medical_diagnostic_records": {
+        "Vaccination History": "TEXT",
+        "Lab Data": "TEXT",
+        "Pathology Findings (Necropsy)": "TEXT",
+        "Current Treatment": "TEXT",
+        "Management Questions": "TEXT"
+    }
+}
+
 forms = []
 for key in form_definitions:
   forms.append(key)
@@ -83,16 +106,31 @@ for key in form_definitions:
   
 # ======================DB INITIALIZER AGENTS======================
 
-def db_init_agent(form_def):
+def db_init_agent(form_def_type):
     # Format form def into schema text
-    def format_form_dict(forms_dict):
-        form_info = ""
-        for form, fields in forms_dict.items():
-            form_info += f"Form: {form}\nFields:\n"
-            for field in fields:
-                form_info += f"- {field}\n"
-            form_info += "\n"
-        return form_info
+    def to_sql_field_name(label):
+        # Lowercase and replace non-alphanumeric characters with underscores
+        return re.sub(r'\W+', '_', label.strip().lower())
+
+    def format_form_schema_with_types(form_defs_types):
+        shared_fields = [
+            "- id INTEGER PRIMARY KEY AUTOINCREMENT",
+            "- case_id TEXT",
+            "- user TEXT",
+            "- timestamp DATETIME DEFAULT CURRENT_TIMESTAMP"
+        ]
+
+        result = []
+        for form_name, fields in form_defs_types.items():
+            field_lines = [
+                f"- {to_sql_field_name(field)} {sql_type}"
+                for field, sql_type in fields.items()
+            ]
+            form_description = f"Table `{form_name}` has the following fields:\n" + \
+                            "\n".join(shared_fields + field_lines)
+            result.append(form_description)
+
+        return "\n\n".join(result)
 
     # --- 3. Define the Agent ---
     sql_create_agent = Agent(
@@ -116,7 +154,7 @@ def db_init_agent(form_def):
         - UNIQUE(case_id, user)
         
         Use `snake_case` for all field names.
-        {format_form_dict(form_def)}
+        {format_form_schema_with_types(form_def_type)}
         Return only the SQL statements in one markdown code block""",
         expected_output="SQL `CREATE TABLE` statements for each form in a single markdown code block like ```sql ...```",
         agent=sql_create_agent
@@ -145,27 +183,32 @@ def db_init_agent(form_def):
     return clean_sql
 
 # ================================CREW DYNAMIC SQL GENERATOR=======================================
-def dynamic_sql_agent(intent, form_def):
+def dynamic_sql_agent(intent, form_def_type):
     def to_sql_field_name(label):
         # Lowercase and replace non-alphanumeric characters with underscores
         return re.sub(r'\W+', '_', label.strip().lower())
 
-    # 2. Format form definition into readable schema text
-    def format_form_schema_text(form_defs): 
+    def format_form_schema_with_types(form_defs_types):
         shared_fields = [
             "- id INTEGER PRIMARY KEY AUTOINCREMENT",
             "- case_id TEXT",
             "- user TEXT",
             "- timestamp DATETIME DEFAULT CURRENT_TIMESTAMP"
         ]
-        
-        return "\n\n".join([
-            f"Table `{form}` has the following fields:\n" +
-            "\n".join(shared_fields + [f"- {to_sql_field_name(field)}" for field in fields.keys()])
-            for form, fields in form_defs.items()
-        ])
 
-    form_def_text = format_form_schema_text(form_def)
+        result = []
+        for form_name, fields in form_defs_types.items():
+            field_lines = [
+                f"- {to_sql_field_name(field)} {sql_type}"
+                for field, sql_type in fields.items()
+            ]
+            form_description = f"Table `{form_name}` has the following fields:\n" + \
+                            "\n".join(shared_fields + field_lines)
+            result.append(form_description)
+
+        return "\n\n".join(result)
+
+    form_def_text = format_form_schema_with_types(form_def_type)
     print(form_def_text)
 
     # 4. Create SQL Agent
@@ -195,6 +238,7 @@ def dynamic_sql_agent(intent, form_def):
     - Do NOT return explanations, only the SQL queries.
     - Return the output in **JSON format** with keys as table names and values as SQL strings.
     - Use lowercase snake_case field names exactly as defined in the schema (not display labels).
+    - CONFLICT(case_id, user) can be used. DO NOT USE CONFLICT(case_id) or CONFLICT(user).
 
     --- FORM SCHEMA ---
     {form_def_text}
@@ -258,3 +302,67 @@ def dynamic_sql_agent(intent, form_def):
 #     print(agent_result[form])
 # else:
 #     raise Exception
+
+
+# ================================CREW SQL VALIDATOR=======================================
+
+def data_validator_agent(form_def):
+    # Format form def into schema text
+    def format_form_dict(forms_dict):
+        form_info = ""
+        for form, fields in forms_dict.items():
+            form_info += f"Form: {form}\nFields:\n"
+            for field in fields:
+                form_info += f"- {field}\n"
+            form_info += "\n"
+        return form_info
+
+    # --- 3. Define the Agent ---
+    sql_create_agent = Agent(
+        role="SQL Table Builder",
+        goal="Generate SQLite table creation scripts based on form fields",
+        backstory="You assist backend engineers by translating structured form definitions into clean SQL schema statements.",
+        verbose=True,
+        allow_delegation=False,
+        llm=ChatOpenAI(model_name="gpt-4o")
+    )
+
+    # --- 4. Define the Task ---
+    sql_create_task = Task(
+        description=f"""You are a backend developer assistant. Generate SQL `CREATE TABLE IF NOT EXISTS` statements for each form below.
+        Each table must include:
+        - id INTEGER PRIMARY KEY AUTOINCREMENT
+        - case_id TEXT
+        - user TEXT
+        - timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        At the end of each table definition, include this constraint:
+        - UNIQUE(case_id, user)
+        
+        Use `snake_case` for all field names.
+        {format_form_dict(form_def)}
+        Return only the SQL statements in one markdown code block""",
+        expected_output="SQL `CREATE TABLE` statements for each form in a single markdown code block like ```sql ...```",
+        agent=sql_create_agent
+    )
+
+    # --- 5. Run the Crew ---
+    schema_builder_crew = Crew(
+        agents=[sql_create_agent],
+        tasks=[sql_create_task],
+        verbose=False,
+        memory=False
+    )
+
+    # Execute
+    result = schema_builder_crew.kickoff()
+    sqlbuilder_output = str(result)
+
+    def extract_sql_block(result_text: str) -> str:
+        if result_text.startswith("```sql"):
+            return result_text.strip().removeprefix("```sql").removesuffix("```").strip()
+        return result_text.strip()
+
+    # Usage:
+    clean_sql = extract_sql_block(sqlbuilder_output)
+    print(clean_sql)
+    return clean_sql

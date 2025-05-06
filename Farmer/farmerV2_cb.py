@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ContextTypes, ConversationHandler, filters
@@ -38,6 +38,52 @@ form_definitions = {
     }
 }
 
+form_definitions_types = {
+    "flock_farm_information": {
+        "Type of Chicken": "TEXT",
+        "Age of Chicken": "INTEGER",
+        "Housing Type": "TEXT",
+        "Number of Affected Flocks/Houses": "INTEGER",
+        "Feed Type": "TEXT",
+        "Environment Information": "TEXT"
+    },
+    "symptoms_performance_data": {
+        "Main Symptoms": "TEXT",
+        "Daily Production Performance": "TEXT",  # Can be JSON or text-encoded data
+        "Pattern of Spread or Drop": "TEXT"
+    },
+    "medical_diagnostic_records": {
+        "Vaccination History": "TEXT",
+        "Lab Data": "TEXT",
+        "Pathology Findings (Necropsy)": "TEXT",
+        "Current Treatment": "TEXT",
+        "Management Questions": "TEXT"
+    }
+}
+
+form_validation = {
+    "flock_farm_information": {
+        "Type of Chicken": lambda x: x.lower() in ["layer", "broiler", "breeder"],
+        "Age of Chicken": lambda x: x.isdigit() and 0 < int(x) < 200,
+        "Housing Type": lambda x: x.lower() in ["closed house", "opened-side", "open-sided", "open house"],
+        "Number of Affected Flocks/Houses": lambda x: x.isdigit() and int(x) >= 0,
+        "Feed Type": lambda x: x.lower() in ["complete feed", "self mix"],
+        "Environment Information": lambda x: len(x.strip()) > 10
+    },
+    "symptoms_performance_data": {
+        "Main Symptoms": lambda x: len(x.strip()) > 5,
+        "Daily Production Performance": lambda x: len(x.strip()) > 5,
+        "Pattern of Spread or Drop": lambda x: len(x.strip()) > 5
+    },
+    "medical_diagnostic_records": {
+        "Vaccination History": lambda x: len(x.strip()) > 5,
+        "Lab Data": lambda x: len(x.strip()) > 5,
+        "Pathology Findings (Necropsy)": lambda x: len(x.strip()) > 5,
+        "Current Treatment": lambda x: len(x.strip()) > 5,
+        "Management Questions": lambda x: len(x.strip()) > 5
+    }
+}
+
 intent_dict = {   
     "insert_into_db": "Insert or update a given form entry for the given user and case_id with the latest field values from the session."
 }
@@ -49,8 +95,8 @@ DB_PATH = "../JAPFASNOWFLAKE.db"
 user_session_data = {}
 
 # DB Setup
-def init_db(form_definitions):
-    sql_block = db_init_agent(form_definitions)
+def init_db(form_definitions_types):
+    sql_block = db_init_agent(form_definitions_types)
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -70,28 +116,53 @@ def init_db(form_definitions):
         print("❌ Error executing SQL schema:", e)
     finally:
         conn.close()
+        
+def to_sql_field_name(label):
+    return re.sub(r'\W+', '_', label.strip().lower())
 
-def save_to_db_with_agent(user_id, form, case_id, data):
-    user_prompt = intent_dict["insert_into_db"]
-    result_str = dynamic_sql_agent(user_prompt, form_definitions)
+def extract_field_names_from_insert(sql):
+    match = re.search(r"INSERT INTO \w+ \((.*?)\)", sql)
+    if not match:
+        return []
+    field_str = match.group(1)
+    return [field.strip() for field in field_str.split(",")]
+
+def save_to_db_with_agent(user_id, form, case_id, data, sql_dict):
+    sql = sql_dict.get(form)
+    if not sql:
+        print(f"No SQL returned for form: {form}")
+        return
+
     try:
-        sql_dict = ast.literal_eval(result_str)
-        sql = sql_dict.get(form)
-        if not sql:
-            print(f"No SQL returned for form: {form}")
-            return
+        # Normalize field names in data
+        normalized_data = {
+            to_sql_field_name(k): v for k, v in data.items()
+        }
 
-        # Prepare values in order (user, case_id, ...fields)
-        values = [case_id, str(user_id)] + list(data.values())
+        # Extract expected field names from SQL
+        field_names = extract_field_names_from_insert(sql)
+
+        # Build value map including case_id and user
+        value_map = {
+            "case_id": case_id,
+            "user": str(user_id),
+            **normalized_data
+        }
+
+        # Final value list in correct order
+        values = [value_map.get(field, None) for field in field_names]
+
+        print("FINAL SQL:", sql)
+        print("VALUES:", values)
 
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute(sql, values)
         conn.commit()
         conn.close()
-        print(f"✅ Saved {form} for user {user_id} with case_id {case_id}")
+
     except Exception as e:
-        print("Error executing dynamic SQL:", e)
+        print("❌ Error executing dynamic SQL:", e)
 
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, preserve_session=False):
@@ -105,7 +176,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, preserve_ses
     keyboard = [[InlineKeyboardButton(name.replace("_", " ").title(), callback_data=f"form:{name}")]
                 for name in form_definitions.keys()]
     keyboard.append([InlineKeyboardButton("💾 Save and Quit", callback_data="save_quit")])
-    await update.message.reply_text("📋 Choose a form to answer:", reply_markup=InlineKeyboardMarkup(keyboard))
+    if update.message:
+        await update.message.reply_text("📋 Choose a form to answer:", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif update.callback_query:
+        await update.callback_query.message.reply_text("📋 Choose a form to answer:", reply_markup=InlineKeyboardMarkup(keyboard))
     return SELECTING_FORM
 
 # Form selection
@@ -134,9 +208,23 @@ async def show_question_menu(query, user_id):
     for q in form_definitions[form]:
         status = "✅" if q in answered else "❌"
         keyboard.append([InlineKeyboardButton(f"{status} {q}", callback_data=f"question:{q}")])
-    await query.edit_message_text(f"📄 Answering: {form.replace('_', ' ').title()}",
-                                  reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # Add Return to Form Select button
+    keyboard.append([InlineKeyboardButton("🔙 Return to Form Select", callback_data="return_to_form_select")])
+
+    await query.edit_message_text(
+        f"📄 Answering: {form.replace('_', ' ').title()}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return SELECTING_QUESTION
+
+async def return_to_form_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # user_id = query.from_user.id
+    # print(f"User {user_id} pressed 'Return to Form Select'")  # Debugging log
+    return await start(update, context, preserve_session=True)
 
 async def select_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -161,9 +249,14 @@ async def enter_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await start(update, context, preserve_session=True)
     else:
         # Ask next
-        keyboard = [[InlineKeyboardButton("Back to Questions", callback_data=f"form:{form}")]]
-        await update.message.reply_text("✅ Answer saved.", reply_markup=InlineKeyboardMarkup(keyboard))
-        return SELECTING_QUESTION
+        # keyboard = [[InlineKeyboardButton("Back to Questions", callback_data=f"form:{form}")]]
+        # await update.message.reply_text("✅ Answer saved.", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text("✅ Answer saved.")
+        class FakeQuery:
+            async def edit_message_text(self, text, reply_markup=None):
+                await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+
+        return await show_question_menu(FakeQuery(), user_id)
 
 async def save_quit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -172,9 +265,12 @@ async def save_quit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = user_session_data.get(user_id)
     if session:
         case_id = str(uuid.uuid4())
-        for form_name, answers in session.get("forms", {}).items():
-            if answers:
-                save_to_db_with_agent(user_id, form_name, case_id, answers)
+    user_prompt = intent_dict["insert_into_db"]
+    sql_dict = ast.literal_eval(dynamic_sql_agent(user_prompt, form_definitions_types))
+
+    for form_name in form_definitions.keys():
+        answers = session.get("forms", {}).get(form_name, {})
+        save_to_db_with_agent(user_id, form_name, case_id, answers, sql_dict)
     await query.edit_message_text("💾 Saved. Goodbye!")
     user_session_data.pop(user_id, None)
     return ConversationHandler.END
@@ -186,7 +282,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not os.path.exists(DB_PATH):
         print("Database not found. Initializing...")
-        init_db(form_definitions)
+        init_db(form_definitions_types)
     else:
         print("Database already exists. Skipping initialization.")
         
@@ -201,7 +297,8 @@ def main():
             ],
             SELECTING_QUESTION: [
                 CallbackQueryHandler(select_question, pattern="^question:"),
-                CallbackQueryHandler(select_form, pattern="^form:")
+                CallbackQueryHandler(select_form, pattern="^form:"),
+                CallbackQueryHandler(return_to_form_select, pattern="^return_to_form_select$")
             ],
             ENTERING_ANSWER: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, enter_answer)
