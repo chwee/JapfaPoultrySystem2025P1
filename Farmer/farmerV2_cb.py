@@ -241,17 +241,24 @@ async def enter_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.message.text.strip()
     question = user_session_data[user_id].get("current_question")
     form = user_session_data[user_id]["current_form"]
+
+    # Get validator for this field
+    validator = form_validation.get(form, {}).get(question)
+
+    if validator and not validator(answer):
+        await update.message.reply_text("⚠️ Invalid input. Please try again with a valid answer.")
+        await update.message.reply_text(form_definitions[form][question])  # Re-prompt
+        return ENTERING_ANSWER
+
+    # Save valid answer
     user_session_data[user_id]["forms"][form][question] = answer
 
-    # If all answered, return to main
     if len(user_session_data[user_id]["forms"][form]) == len(form_definitions[form]):
         await update.message.reply_text("✅ All questions answered! Returning to main menu...")
         return await start(update, context, preserve_session=True)
     else:
-        # Ask next
-        # keyboard = [[InlineKeyboardButton("Back to Questions", callback_data=f"form:{form}")]]
-        # await update.message.reply_text("✅ Answer saved.", reply_markup=InlineKeyboardMarkup(keyboard))
         await update.message.reply_text("✅ Answer saved.")
+
         class FakeQuery:
             async def edit_message_text(self, text, reply_markup=None):
                 await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
