@@ -13,7 +13,9 @@ from telegram.ext import (
     ConversationHandler,
 )
 import uuid
+import ast
 from farmer_agents import db_init_agent
+from farmer_agents import dynamic_sql_agent
 
 # States
 SELECTING_DATA, ENTERING_VALUE, UPLOADING_IMAGE, CONFIRMING = range(4)
@@ -21,6 +23,8 @@ SELECTING_DATA, ENTERING_VALUE, UPLOADING_IMAGE, CONFIRMING = range(4)
 RESUME_OR_NEW = 99  # New state before SELECTING_DATA
 
 CONFIRM_CANCEL = 100
+
+db_connection = sqlite3.connect("../poultry_data.db")
 
 # Constants
 BIOSECURITY_FIELDS = [
@@ -92,10 +96,37 @@ form_definitions = {
         "Feed and Water Intake": "Have you noticed any decrease in feed or water consumption? (Yes / No)",
         "Vaccination Status": "What are the vaccinations the chickens have taken? (e.g., Newcastle disease, Infectious bronchitis)",
         "Other Health Concerns": "Do you have any other health concerns about the chickens? (e.g., Sudden drop in egg production, feather loss)"
-    },
-    "whip_and_nae_nae": {
-        "yipee": "sigma"
     }
+}
+
+    # "whip_and_nae_nae": {
+    #     "yipee": "sigma"
+    # }
+
+forms = []
+for key in form_definitions:
+  forms.append(key)
+
+intent_dict = {
+    "get_fully_completed_forms_by_case_id": "Select all fields from each form table to determine if the form linked to the given case_id is fully completed.",
+    
+    "handle_resume_decision": "Delete an incomplete form entry from its respective table using the provided case_id.",
+    
+    "confirm_save_biosecurity": "Insert or update a biosecurity_form entry for the given user and case_id with the latest field values from the session.",
+    "confirm_save_mortality": "Insert or update a mortality_form entry for the given user and case_id with the latest field values from the session.",
+    "confirm_save_health_status": "Insert or update a health_status_form entry for the given user and case_id, including the optional image path if provided.",
+    
+    "get_forms_by_case_id": "Check whether each form table contains any row with the given case_id to determine form completion status.",
+    
+    "cancel_entry": "Select fields from each form table to verify if a form is fully filled for the given case_id.",
+    
+    "cancel_confirmed": "Delete all entries from biosecurity_form, mortality_form, and health_status_form where case_id matches the session's active case.",
+    
+    "load_incomplete_data": "Select the latest case_id submitted by the given user_id across all form tables, regardless of whether the form is fully completed, by combining and ordering all timestamps.",
+    
+    "is_form_incomplete": "Select all relevant fields (including image_path if present) from the latest entry in all the form tables for the given user and case_id. Do not exclude rows based on null or empty values. Order results by timestamp descending and limit to 1 row.",
+    
+    "fallback_resume_prompt_check": "Check if each form table has at least one row for the given case_id to decide whether to show a resume prompt."
 }
 
 # In-memory user session data
@@ -103,15 +134,22 @@ user_session_data = {}
 
 # DB Setup
 def init_db():
-    conn = sqlite3.connect("../poultry_data.db")
-    print(f"DB Path: {os.path.abspath('../poultry_data.db')}")
-    c = conn.cursor()
-    sql_statements = db_init_agent(form_definitions).split(";")
-    for stmt in sql_statements:
-        if stmt.strip():
-            c.execute(stmt.strip() + ";")
-    conn.commit()
-    conn.close()
+    db_path = os.path.abspath("../poultry_data.db")
+
+    if not os.path.exists(db_path):
+        conn = sqlite3.connect(db_path)
+        print(f"Creating new DB at: {db_path}")
+        c = conn.cursor()
+
+        sql_statements = db_init_agent(form_definitions).split(";")
+        for stmt in sql_statements:
+            if stmt.strip():
+                c.execute(stmt.strip() + ";")
+
+        conn.commit()
+        conn.close()
+    else:
+        print(f"DB already exists at: {db_path}")
 
 # Start Command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,7 +181,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not bio_done:
                 keyboard.append([InlineKeyboardButton("📋 Resume Biosecurity Form", callback_data="form_biosecurity")])
             if not mort_done:
-                keyboard.append([InlineKeyboardButton("☠️ Resume Mortality Form", callback_data="form_mortality")])
+                keyboard.append([InlineKeyboardButton("☠️ Resume Mortality Form", callback_data="form_mortality")]) 
+                # Forms can be resumed despite being done as they can be updated with new fields ********
             if not health_done:
                 keyboard.append([InlineKeyboardButton("❤️ Resume Health Status Form", callback_data="form_health_status")])
 
@@ -160,7 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_form = previous_data["__current_form"]
 
             # ✅ List completed forms properly (checking non-null fields)
-            completed_forms = get_fully_completed_forms_by_case_id(case_id)
+            completed_forms = get_fully_completed_forms_by_case_id_NEW(case_id)
 
             completed_text = "\n✅ Completed Forms:\n"
             if completed_forms["biosecurity"]:
@@ -204,7 +243,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SELECTING_DATA
       
 def get_fully_completed_forms_by_case_id(case_id):
-    conn = sqlite3.connect("../poultry_data.db")
+    conn = db_connection
     c = conn.cursor()
 
     completed = {
@@ -244,6 +283,26 @@ def get_fully_completed_forms_by_case_id(case_id):
 
     conn.close()
     return completed
+
+def get_fully_completed_forms_by_case_id_NEW(case_id):
+    conn = db_connection
+    c = conn.cursor()
+
+    agent_result = ast.literal_eval(dynamic_sql_agent(intent_dict["get_fully_completed_forms_by_case_id"]))
+        
+    completed = {}
+    if not agent_result.get("unified_output"):
+        for form in forms:
+            completed[form] = False
+            c.execute(agent_result[form], (case_id,))
+            row = c.fetchone()
+            if row and all(field is not None and field != "" for field in row):
+                completed[form] = True
+    else:
+        raise Exception("Unified Output used, agent output error")
+
+    conn.close()
+    return completed
     
 async def handle_resume_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -263,7 +322,7 @@ async def handle_resume_decision(update: Update, context: ContextTypes.DEFAULT_T
                 current_form = incomplete_data.get("__current_form")
 
                 if case_id and current_form:
-                    conn = sqlite3.connect("../poultry_data.db")
+                    conn = db_connection
                     c = conn.cursor()
                     if current_form == "biosecurity":
                         c.execute('DELETE FROM biosecurity_form WHERE id = ?', (case_id,))
@@ -579,7 +638,7 @@ async def confirm_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_form = session_data.get("__current_form")
         print(f"Saving session_data for user {user_id}: {session_data}")
 
-        conn = sqlite3.connect("../poultry_data.db")
+        conn = db_connection
         c = conn.cursor()
 
         if current_form == "biosecurity":
@@ -775,7 +834,7 @@ def is_form_complete(session_data):
     return True
   
 def get_forms_by_case_id(case_id):
-    conn = sqlite3.connect("../poultry_data.db")
+    conn = db_connection
     c = conn.cursor()
     
     completed = {
@@ -811,7 +870,7 @@ async def cancel_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message += "The following *fully completed* forms linked to this case will be deleted:\n\n"
 
     try:
-        conn = sqlite3.connect("../poultry_data.db")
+        conn = db_connection
         c = conn.cursor()
 
         forms_deleted = []
@@ -887,7 +946,7 @@ async def cancel_confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Delete from database FIRST
     try:
-        conn = sqlite3.connect("../poultry_data.db")
+        conn = db_connection
         c = conn.cursor()
         c.execute('DELETE FROM biosecurity_form WHERE case_id = ?', (case_id,))
         c.execute('DELETE FROM mortality_form WHERE case_id = ?', (case_id,))
@@ -951,7 +1010,7 @@ async def review_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SELECTING_DATA
 
 def load_incomplete_data(user_id):
-    conn = sqlite3.connect("../poultry_data.db")
+    conn = db_connection
     c = conn.cursor()
 
     # Find latest case_id (even if fully filled form) for user
@@ -1041,6 +1100,71 @@ def load_incomplete_data(user_id):
             "biosecurity_done": bio_done,
             "mortality_done": mort_done,
             "health_status_done": health_done
+        }
+
+    return {}
+
+def load_incomplete_data_NEW(user_id):
+    conn = db_connection
+    c = conn.cursor()
+
+    agent_result = ast.literal_eval(dynamic_sql_agent(intent_dict["load_incomplete_data"]))
+    
+    # Find latest case_id (even if fully filled form) for user
+    c.execute(agent_result['unified_output'], (str(user_id), str(user_id), str(user_id)))
+
+    row = c.fetchone()
+
+    if not row:
+        conn.close()
+        return {}  # No forms at all
+
+    case_id = row[0]
+
+    # Helper to detect if a form is incomplete
+    def is_form_incomplete_NEW(table, fields, prefix=""):
+        agent_result = ast.literal_eval(dynamic_sql_agent(intent_dict["is_form_incomplete"]))
+        
+        if "unified_output" in agent_result:
+            raise Exception("Agent returned unified_output, expected per-form SQL.")
+    
+        if table not in agent_result:
+            raise Exception(f"No SQL query found for table '{table}' in agent output.")
+    
+        query = agent_result[table]
+        c.execute(query, (case_id, str(user_id)))
+        row = c.fetchone()
+    
+        if not row:
+            return None
+    
+        # Exclude metadata fields from validation (id, case_id, user, timestamp)
+        metadata_fields = ["id", "case_id", "user", "timestamp"]
+        data_field_indices = [i for i, f in enumerate(fields) if f not in metadata_fields]
+        
+        # Check if any of the main form fields are incomplete
+        if any(row[i] is None or row[i] == "" for i in data_field_indices):
+            session = {"__case_id": case_id, "__current_form": prefix}
+            for i in data_field_indices:
+                if row[i]:  # only save non-empty values
+                    session[fields[i]] = {"value": row[i]}
+            return session
+    
+        return None
+
+    # Dynamically check which forms are done
+    form_status = {}
+    for form_table in form_definitions.keys():
+        c.execute(f"SELECT 1 FROM {form_table} WHERE case_id = ?", (case_id,))
+        form_status[f"{form_table}_done"] = bool(c.fetchone())
+
+    conn.close()
+
+    if sum(form_status.values()) < len(form_definitions):
+        return {
+            "__case_id": case_id,
+            "__resume_prompt": True,
+            **form_status
         }
 
     return {}
