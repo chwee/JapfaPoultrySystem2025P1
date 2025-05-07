@@ -9,6 +9,8 @@ import sqlite3
 import os
 import re
 import ast
+import textwrap
+import inspect
 
 # Load API key from .env
 load_dotenv()
@@ -53,26 +55,25 @@ intent_dict = {
 
 # --- 1. Form Definition ---
 form_definitions = {
-    "1st_stage": {
-        "Farm Entry Protocols": "What protocols are followed before someone can enter the farm? (e.g., Change boots and clothes, wash hands, register name)",
-        "Disinfectant Used": "Which disinfectants do you use regularly? (e.g., Virkon S, bleach solution, iodine)",
-        "Footbath Availability": "Is a footbath provided at all entrances to animal areas? (e.g., Yes / No / Not Reinforced)",
-        "Protective Clothing": "What type of protective clothing is provided for visitors/workers? (e.g., Boots, coveralls, gloves)",
-        "Frequency of Disinfection": "How often are animal enclosures disinfected? (e.g., Daily, once a week, after every batch)",
-        "Biosecurity Breach": "Describe any recent biosecurity incident and your response. (e.g., Visitor entered without footbath, cleaned area immediately and disinfected)"
+    "flock_farm_information": {
+        "Type of Chicken": "What type of chicken is this? (e.g., Layer, Broiler, Breeder)",
+        "Age of Chicken": "What is the age of the chicken? (years, round up to nearest whole number)",
+        "Housing Type": "What housing type is used? (e.g., Closed House, Opened-Side)",
+        "Number of Affected Flocks/Houses": "How many flocks or houses are affected?",
+        "Feed Type": "What type of feed is used? (e.g., Complete Feed, Self Mix)",
+        "Environment Information": "Describe the environmental conditions (e.g., climate, weather, cage atmosphere, nearby poultry farms)"
     },
-    "2nd_stage": {
-        "Number of Deaths": "How many chickens died in the past 7 days? (e.g., 15)",
-        "Age Group Affected": "What age group of the chickens were affected? (e.g., 0–2 weeks, 3–6 weeks, Layers, Breeders)",
-        "Date of First Death": "When did the first death occur? (e.g., 3/4/2024)",
-        "Pattern of Deaths": "Were deaths sudden or gradual over time? (e.g., Sudden / Gradual)"
+    "symptoms_performance_data": {
+        "Main Symptoms": "What are the main symptoms or clinical signs observed?",
+        "Daily Production Performance": "Provide daily chicken production data (e.g., mortality, %HD, feed intake, egg weight)",
+        "Pattern of Spread or Drop": "Describe if there's mortality, production drop, or spreading pattern"
     },
-    "3rd_stage": {
-        "General Flock Health": "How would you describe the overall health of your flock today? (e.g., Good, Fair, Poor)",
-        "Visible Symptoms": "What are the symptoms you observed? (e.g., Coughing, diarrhea, swollen eyes, weak legs)",
-        "Feed and Water Intake": "Have you noticed any decrease in feed or water consumption? (Yes / No)",
-        "Vaccination Status": "What are the vaccinations the chickens have taken? (e.g., Newcastle disease, Infectious bronchitis)",
-        "Other Health Concerns": "Do you have any other health concerns about the chickens? (e.g., Sudden drop in egg production, feather loss)"
+    "medical_diagnostic_records": {
+        "Vaccination History": "What is the vaccination history or program followed?",
+        "Lab Data": "Provide any lab results or data if available",
+        "Pathology Findings (Necropsy)": "List any pathology anatomy changes found during necropsy",
+        "Current Treatment": "What treatment is currently being administered?",
+        "Management Questions": "List any management-related concerns or questions"
     }
 }
 
@@ -96,6 +97,29 @@ form_definitions_types = {
         "Pathology Findings (Necropsy)": "TEXT",
         "Current Treatment": "TEXT",
         "Management Questions": "TEXT"
+    }
+}
+
+form_validation = {
+    "flock_farm_information": {
+        "Type of Chicken": lambda x: x.lower() in ["layer", "broiler", "breeder"],
+        "Age of Chicken": lambda x: x.isdigit() and 0 < int(x) < 200,
+        "Housing Type": lambda x: x.lower() in ["closed house", "opened-side", "open-sided", "open house"],
+        "Number of Affected Flocks/Houses": lambda x: x.isdigit() and int(x) >= 0,
+        "Feed Type": lambda x: x.lower() in ["complete feed", "self mix"],
+        "Environment Information": lambda x: len(x.strip()) > 10
+    },
+    "symptoms_performance_data": {
+        "Main Symptoms": lambda x: len(x.strip()) > 5,
+        "Daily Production Performance": lambda x: len(x.strip()) > 5,
+        "Pattern of Spread or Drop": lambda x: len(x.strip()) > 5
+    },
+    "medical_diagnostic_records": {
+        "Vaccination History": lambda x: len(x.strip()) > 5,
+        "Lab Data": lambda x: len(x.strip()) > 5,
+        "Pathology Findings (Necropsy)": lambda x: len(x.strip()) > 5,
+        "Current Treatment": lambda x: len(x.strip()) > 5,
+        "Management Questions": lambda x: len(x.strip()) > 5
     }
 }
 
@@ -261,7 +285,7 @@ def dynamic_sql_agent(intent, form_def_type):
     """
 
     # 6. Create and run Crew
-    task = Task(
+    generateDynamicSql = Task(
         description=task_description,
         agent=sql_agent,
         expected_output="A JSON dictionary mapping table names to SQL SELECT queries, parameterized with `?`, filtering by case_id and excluding null/empty fields."
@@ -269,7 +293,7 @@ def dynamic_sql_agent(intent, form_def_type):
 
     crew = Crew(
         agents=[sql_agent],
-        tasks=[task],
+        tasks=[generateDynamicSql],
         verbose=True
     )
 
@@ -306,63 +330,143 @@ def dynamic_sql_agent(intent, form_def_type):
 
 # ================================CREW SQL VALIDATOR=======================================
 
-def data_validator_agent(form_def):
-    # Format form def into schema text
-    def format_form_dict(forms_dict):
-        form_info = ""
-        for form, fields in forms_dict.items():
-            form_info += f"Form: {form}\nFields:\n"
-            for field in fields:
-                form_info += f"- {field}\n"
-            form_info += "\n"
-        return form_info
+def describe_validation_for_question(question, form_validation):
+    for form_fields in form_validation.values():
+        if question in form_fields:
+            validator = form_fields[question]
+            try:
+                src = textwrap.dedent(inspect.getsource(validator)).strip()
+                # Numeric rules
+                if "x.isdigit()" in src and "int(x)" in src:
+                    rules = re.findall(r"int\(x\)\s*([<>]=?)\s*(\d+)", src)
+                    if rules:
+                        parts = []
+                        for op, val in rules:
+                            op_map = {
+                                ">": f"more than {val}",
+                                ">=": f"at least {val}",
+                                "<": f"less than {val}",
+                                "<=": f"at most {val}"
+                            }
+                            parts.append(op_map.get(op, f"{op} {val}"))
+                        return f"Must be a number {' and '.join(parts)}."
+                    return "Must be a valid number."
+                # Choice-based rules
+                elif "x.lower()" in src and "in" in src:
+                    options = re.findall(r"\[([^\]]+)\]", src)
+                    if options:
+                        opts = [o.strip().strip("'\"") for o in options[0].split(",")]
+                        return f"Must be one of the following: {', '.join(opts)}."
+                # Text length rules
+                elif "len(x.strip())" in src:
+                    rules = re.findall(r"len\(x\.strip\(\)\)\s*([<>]=?)\s*(\d+)", src)
+                    if rules:
+                        parts = []
+                        for op, val in rules:
+                            op_map = {
+                                ">": f"more than {val} characters",
+                                ">=": f"at least {val} characters",
+                                "<": f"less than {val} characters",
+                                "<=": f"at most {val} characters"
+                            }
+                            parts.append(op_map.get(op, f"{op} {val} characters"))
+                        return f"Must be {' and '.join(parts)}."
+                return "Unrecognized validation rule."
+            except Exception as e:
+                return f"Could not extract rule due to error: {e}"
+    return "No validation rule found for this question."
 
-    # --- 3. Define the Agent ---
-    sql_create_agent = Agent(
-        role="SQL Table Builder",
-        goal="Generate SQLite table creation scripts based on form fields",
-        backstory="You assist backend engineers by translating structured form definitions into clean SQL schema statements.",
+def data_validator_agent(question: str, answer: str, form_def: dict, form_val: dict):
+    validation_description = describe_validation_for_question(question, form_val)
+    prompt_question = form_def.get(question, question)
+
+    # Define the Agent
+    validator_agent = Agent(
+        role="Answer Validator",
+        goal="Ensure user answers are valid, complete, and relevant to the question and rules.",
+        backstory="You are a quality control assistant helping validate data entry in a form-based system. You check whether answers make sense given the question and known validation rules.",
+        verbose=True,
+        allow_delegation=False,
+        llm=ChatOpenAI(model_name="gpt-4o")
+    )
+    
+    error_response_agent = Agent(
+        role="Error Message Composer",
+        goal="Generate helpful error responses for invalid user input.",
+        backstory="You help users correct their data entry by generating clear, friendly, and instructional error messages based on validation feedback.",
         verbose=True,
         allow_delegation=False,
         llm=ChatOpenAI(model_name="gpt-4o")
     )
 
-    # --- 4. Define the Task ---
-    sql_create_task = Task(
-        description=f"""You are a backend developer assistant. Generate SQL `CREATE TABLE IF NOT EXISTS` statements for each form below.
-        Each table must include:
-        - id INTEGER PRIMARY KEY AUTOINCREMENT
-        - case_id TEXT
-        - user TEXT
-        - timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        At the end of each table definition, include this constraint:
-        - UNIQUE(case_id, user)
+    # Define the Task
+    validator_task = Task(
+        description=f"""
+        You are a form data validation assistant.
+
+        The user answered the following question:
+        - **Question**: {prompt_question}
+        - **Answer**: {answer}
+
+        The base validation rule for this question is:
+        - {validation_description}
+
+        Please check if the answer is:
+        1. Related to the question
+        2. Satisfies the base validation rule (e.g., number range, allowed options, etc.)
+        3. Not suspicious, empty, or illogical
+
+        Return one of:
+        - ✅ Valid
+        - ⚠️ Invalid with reason (e.g., wrong type, too short, out of range)
+        - ❌ Suspicious or off-topic
+        """,
+        expected_output="A single-line response evaluating the answer as valid, invalid, or suspicious with brief reasoning.",
+        agent=validator_agent
+    )
+    
+    error_message_task = Task(
+        description=f"""
+        If the answer is valid, return the word: valid
         
-        Use `snake_case` for all field names.
-        {format_form_dict(form_def)}
-        Return only the SQL statements in one markdown code block""",
-        expected_output="SQL `CREATE TABLE` statements for each form in a single markdown code block like ```sql ...```",
-        agent=sql_create_agent
+        Based on the user's answer and the validation rule below:
+
+        - **Question**: {prompt_question}
+        - **Answer**: {answer}
+        - **Validation Rule**: {validation_description}
+
+        Generate a short, friendly, and specific error message that tells the user how to fix their input.
+
+        The message should:
+        - Be instructional (e.g., "Please enter a number greater than 5.")
+        - Use the Validation Rule for reference
+        - Give example of what an answer of the question should look like
+        - Mention what was wrong (e.g., too short, not a valid choice)
+        - Avoid technical jargon
+
+        Example: "Your answer seems too short. Please enter at least 10 characters."
+        Example: "Your answer is unrelated to Main Symptoms. Please enter something like high temperature fever." 
+        """,
+        expected_output="Either 'valid' or a helpful and friendly error message using simple language.",
+        agent=error_response_agent
     )
 
-    # --- 5. Run the Crew ---
-    schema_builder_crew = Crew(
-        agents=[sql_create_agent],
-        tasks=[sql_create_task],
+    # Run the Crew
+    crew = Crew(
+        agents=[validator_agent, error_response_agent],
+        tasks=[validator_task, error_message_task],
         verbose=False,
         memory=False
     )
 
-    # Execute
-    result = schema_builder_crew.kickoff()
-    sqlbuilder_output = str(result)
+    result = crew.kickoff()
+    
+    # Separate outputs by index (Task 0 = validator, Task 1 = error message)
+    if isinstance(result, list) and len(result) == 2:
+        validator_output, error_message_output = result
+    else:
+        validator_output = str(result)
+        error_message_output = ""
 
-    def extract_sql_block(result_text: str) -> str:
-        if result_text.startswith("```sql"):
-            return result_text.strip().removeprefix("```sql").removesuffix("```").strip()
-        return result_text.strip()
+    return validator_output.strip(), error_message_output.strip()
 
-    # Usage:
-    clean_sql = extract_sql_block(sqlbuilder_output)
-    print(clean_sql)
-    return clean_sql

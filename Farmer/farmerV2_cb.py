@@ -5,20 +5,22 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ContextTypes, ConversationHandler, filters
 )
-from farmer_agents import dynamic_sql_agent
-from farmer_agents import db_init_agent
+from farmer_agents import dynamic_sql_agent, db_init_agent, data_validator_agent
 import ast
 import uuid
 import re
+import textwrap
+import inspect
 
 # States
 SELECTING_FORM, SELECTING_QUESTION, ENTERING_ANSWER = range(3)
 
-# Sample dynamic form definitions
+# ==================================DATA THAT CAN CHANGE=========================================
+
 form_definitions = {
     "flock_farm_information": {
         "Type of Chicken": "What type of chicken is this? (e.g., Layer, Broiler, Breeder)",
-        "Age of Chicken": "What is the age of the chicken?",
+        "Age of Chicken": "What is the age of the chicken? (years, round up to nearest whole number)",
         "Housing Type": "What housing type is used? (e.g., Closed House, Opened-Side)",
         "Number of Affected Flocks/Houses": "How many flocks or houses are affected?",
         "Feed Type": "What type of feed is used? (e.g., Complete Feed, Self Mix)",
@@ -87,6 +89,8 @@ form_validation = {
 intent_dict = {   
     "insert_into_db": "Insert or update a given form entry for the given user and case_id with the latest field values from the session."
 }
+
+# =================================================================================================
 
 # DB SETUP
 DB_PATH = "../JAPFASNOWFLAKE.db"
@@ -246,9 +250,25 @@ async def enter_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     validator = form_validation.get(form, {}).get(question)
 
     if validator and not validator(answer):
-        await update.message.reply_text("⚠️ Invalid input. Please try again with a valid answer.")
-        await update.message.reply_text(form_definitions[form][question])  # Re-prompt
+        dynamic_error = local_validator(question, validator)
+        await update.message.reply_text(dynamic_error)
+        await update.message.reply_text(form_definitions[form][question])
         return ENTERING_ANSWER
+
+    # ✅ Extra validation for TEXT responses using agent (only if local passed)
+    if validator and "strip" in inspect.getsource(validator):
+        form_question_map = form_definitions[form]
+        validator_output, error_message = data_validator_agent(
+            question=question,
+            answer=answer,
+            form_def=form_question_map,
+            form_val=form_validation
+        )
+        print("🧪 Validator Output:", repr(validator_output))
+        if not validator_output.strip().startswith("✅ Valid"):
+            await update.message.reply_text(error_message or validator_output)
+            await update.message.reply_text(form_question_map[question])
+            return ENTERING_ANSWER
 
     # Save valid answer
     user_session_data[user_id]["forms"][form][question] = answer
@@ -264,6 +284,56 @@ async def enter_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
 
         return await show_question_menu(FakeQuery(), user_id)
+    
+def local_validator(question, validator):
+    try:
+        src = textwrap.dedent(inspect.getsource(validator)).strip()
+
+        # 🧠 Detect number validation
+        if "x.isdigit()" in src:
+            # Check if there's a numeric range check
+            match = re.search(r"int\(x\)\s*([<>]=?)\s*(\d+)", src)
+            if match:
+                operator, threshold = match.groups()
+                operators = {
+                    ">": "greater than",
+                    ">=": "greater than or equal to",
+                    "<": "less than",
+                    "<=": "less than or equal to"
+                }
+                op_text = operators.get(operator, operator)
+                return f"⚠️ Please enter only a number {op_text} {threshold}."
+            else:
+                return "⚠️ Please enter only a number."
+
+        # 🧠 Detect string list options
+        elif "x.lower()" in src and "in" in src:
+            options = re.findall(r"\[([^\]]+)\]", src)
+            if options:
+                clean_opts = options[0].replace('"', '').replace("'", "").split(",")
+                formatted = ", ".join(o.strip().title() for o in clean_opts)
+                return f"⚠️ Please choose one of the following: {formatted}."
+
+        # 🧠 Detect length checks
+        elif "len(x.strip())" in src:
+            match = re.findall(r"len\(x\.strip\(\)\)\s*([<>]=?)\s*(\d+)", src)
+            if match:
+                msgs = []
+                for operator, length in match:
+                    operators = {
+                        ">": f"at least {int(length)+1} characters",
+                        ">=": f"{length} or more characters",
+                        "<": f"fewer than {length} characters",
+                        "<=": f"{length} or fewer characters"
+                    }
+                    msgs.append(operators.get(operator, f"length condition ({operator} {length})"))
+                return "⚠️ Please enter text with " + " and ".join(msgs) + "."
+            return "⚠️ Input length does not meet requirements."
+
+        return "⚠️ Invalid input. Please try again."
+
+    except Exception:
+        return "⚠️ Invalid input. Please try again."
 
 async def save_quit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
