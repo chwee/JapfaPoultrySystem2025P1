@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from crewai import Agent, Task, Crew
 from crewai.tools import BaseTool
 
+# Load .env variables
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 llm = ChatOpenAI(model_name="gpt-4o")
@@ -41,6 +42,7 @@ class SQLiteTool(BaseTool):
     async def _arun(self, query: str) -> str:
         return self._run(query)
 
+# Replace this with your schema
 schema = """
 Tables:
 - biosecurity_form(id, case_id, farm_location, breach_type, affected_area, timestamp)
@@ -52,7 +54,7 @@ Tables:
 
 sqlite_tool = SQLiteTool(db_path="poultry_data.db")
 
-# === AGENTS ===
+# AGENTS
 sql_agent = Agent(
     role="SQL Query Generator",
     goal="Generate safe, parameterized SQL queries to retrieve valid form records.",
@@ -88,17 +90,18 @@ report_generation_agent = Agent(
     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)
 )
 
-# === TASKS ===
-def generate_and_execute_sql(action_type: str, schema: str, llm, db_path: str = "poultry_data.db", case_id: int = None) -> dict:
-    # Create the SQL generation prompt
-    if action_type == "case_summary":
-        user_input = f"Given the case_id {case_id}, show me ALL form fields and their respective data for ALL the tables in the database. Return the results."
-    elif action_type == "generate_report":
-        user_input = f"Generate a full report for case ID {case_id}."
-    elif action_type == "view_all_issues":
-        user_input = "Retrieve all issues from the issues table."
-    else:
-        raise ValueError("Unknown action_type")
+# TASKS
+def generate_and_execute_sql(schema: str, db_path: str = "poultry_data.db", action_type: str = None, case_id: int = None, user_input:str = None) -> dict:
+    if user_input is None:
+        # Create the SQL generation prompt
+        if action_type == "case_summary":
+            user_input = f"Given the case_id {case_id}, show me ALL form fields and their respective data for ALL the tables in the database. Return the results."
+        elif action_type == "generate_report":
+            user_input = f"Generate a full report for case ID {case_id}."
+        elif action_type == "view_all_issues":
+            user_input = "Retrieve all issues from the issues table."
+        else:
+            raise ValueError("Unknown action_type")
     
     sql_prompt = f"""
 You are an SQL generation agent. Your job is to generate **parameterized SQL** statements to fulfill the following task:
@@ -136,7 +139,6 @@ Final Output Format (**EXAMPLE**):
     expected_output="JSON with parameterized SQL"
     )
     
-    # Execute the SQL generation
     crew = Crew(agents=[sql_agent], tasks=[sql_task], verbose=True)
     result = crew.kickoff()
     print("SQL Generation Result:\n", result)
@@ -170,6 +172,32 @@ Final Output Format (**EXAMPLE**):
 
     return execution_results
 
+def generate_report_from_prompt(execution_results):
+    report_prompt = f"""
+    Below is the raw SQL query result data from multiple forms related to a poultry case.
+
+    Your task is to write a professional, human-readable report summarizing the key findings from the data.
+
+    Instructions:
+    - Organize the report clearly by form/table.
+    - Use complete sentences and avoid overly technical language.
+    - Summarize observations, issues, and any notable entries.
+    - Do not include raw SQL or technical field names.
+
+    Raw Data:
+    {json.dumps(execution_results, indent=2)}
+    """
+
+    report_task = Task(
+        description=report_prompt,
+        agent=report_generation_agent,
+        expected_output="A clear and readable summary report.",
+        output_file="report_from_prompt.txt"
+    )
+
+    report_crew = Crew(agents=[report_generation_agent], tasks=[report_task], verbose=True)
+    return report_crew.kickoff()
+
 def generate_individual_case_summary(case_id):
     case_summary_task_description = """
     You have been given the following results from SQL queries on case_id {case_id}. Your task is to generate a high-level summary of the following forms.
@@ -191,7 +219,7 @@ def generate_individual_case_summary(case_id):
     "Health Status Form: <short summary>\n"
     """
 
-    execution_results_for_case_summary = generate_and_execute_sql(action_type='case_summary', case_id=case_id, schema=schema, llm=llm)
+    execution_results_for_case_summary = generate_and_execute_sql(action_type='case_summary', case_id=case_id, schema=schema)
 
     # Generate the formatted report using the results from the SQL execution
     case_summary_task_description_filled = case_summary_task_description.format(
@@ -253,7 +281,7 @@ def generate_report_for_forms(case_id):
     <problem_description>
     """
 
-    execution_results_for_full_report = generate_and_execute_sql(action_type='generate_report', case_id=case_id, schema=schema, llm=llm)
+    execution_results_for_full_report = generate_and_execute_sql(action_type='generate_report', case_id=case_id, schema=schema)
 
     # Generate the formatted report using the results from the SQL execution
     report_task_description_filled = report_task_description.format(
@@ -281,7 +309,7 @@ def generate_report_for_forms(case_id):
 
 def generate_summary_of_all_issues():
     # Access 'issues' data from the 'execution_results'
-    execution_results = generate_and_execute_sql(action_type='view_all_issues', schema=schema, llm=llm)
+    execution_results = generate_and_execute_sql(action_type='view_all_issues', schema=schema)
     issues_results = execution_results.get("issues", [])
 
     # Calculate totals
@@ -314,7 +342,7 @@ def generate_summary_of_all_issues():
 
     # Prepare task description for summary
     summary_task_description = """
-    You have been given the following results from SQL queries. Your task is to generate a comprehensive overview of all the issues in the database.
+    You have been given the following results from SQL queries. Your task is to generate a comprehensive overview of all the issues in the database, using the format below.
 
     --- SQL RESULTS ---
     Issues Results:
@@ -343,7 +371,7 @@ def generate_summary_of_all_issues():
     summary_task = Task(
         description=summary_task_description_filled,
         agent=report_generation_agent,
-        expected_output=f"Concise natural language summaries of the all the issues in the database.",
+        expected_output=f"Summaries of the all the issues in the database, following the format given.",
         output_file="summary_of_all_issues.txt"
     )
 
@@ -431,11 +459,14 @@ def get_case_info(case_id: str) -> str:
     columns = ["case_id", "status", "description", "close_reason", "created_at"]  # Update based on actual schema
     return "\n".join(f"{col}: {val}" for col, val in zip(columns, row))
 
+# case_id = int(input("Enter the case ID: "))
+# prompt = input("Enter the prompt: ")
 
-case_id = int(input("Enter the case ID: "))
+# prompt_results = generate_and_execute_sql(schema=schema, case_id=case_id, user_input=prompt)
+# generate_report_from_prompt(prompt_results)
 
-generate_report_for_forms(case_id)
+# generate_report_for_forms(case_id)
 
-generate_individual_case_summary(case_id)
+# generate_individual_case_summary(case_id)
 
-generate_summary_of_all_issues()
+# generate_summary_of_all_issues()

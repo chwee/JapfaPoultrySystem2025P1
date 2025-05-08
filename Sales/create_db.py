@@ -8,7 +8,8 @@ def init_db():
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
 
-        # Create tables
+        # === Core Tables ===
+
         c.execute('''
             CREATE TABLE IF NOT EXISTS biosecurity_form (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +74,19 @@ def init_db():
             )
         ''')
 
-        # Insert fake data
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS issue_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER,
+                file_name TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (case_id) REFERENCES issues(case_id)
+            )
+        ''')
+
+        # === Sample Test Data ===
+
         c.execute('''
             INSERT INTO biosecurity_form (case_id, farm_location, breach_type, affected_area)
             VALUES (?, ?, ?, ?)
@@ -99,8 +112,8 @@ def init_db():
             INSERT INTO issues (title, description, farm_name, status, assigned_team, case_id)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (
-            'Fence breach and chick deaths', 
-            'Farm A reported chicks escaping due to fencing failure, 15 dead.', 
+            'Fence breach and chick deaths resolved', 
+            'Farm A reported chicks escaping due to fencing failure, 15 dead. Issue resolved after fencing repair.',
             'Farm A',
             'Open', 
             'Sales', 
@@ -114,9 +127,9 @@ def init_db():
             123, 'We noticed the chicks are getting out of the farm due to broken fencing.'
         ))
 
-        # Commit the changes
         conn.commit()
         print("✅ Tables created and test data inserted successfully!")
+
     except sqlite3.Error as e:
         print(f"❌ SQLite error: {e}")
     finally:
