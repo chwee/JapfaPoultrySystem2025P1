@@ -2,19 +2,16 @@ import logging
 import os
 import re
 import json
-import smtplib
-from email.message import EmailMessage
 from langchain_openai import ChatOpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
-from crew import run_upload_analysis, save_attachment
+from crew import run_upload_analysis
 from Sales.test_free_text_in_telegram import (
     execute_case_closing,
     check_case_exists,
-    get_case_info,
     generate_individual_case_summary,
     generate_report_for_forms,
     generate_summary_of_all_issues,
@@ -33,45 +30,17 @@ logging.basicConfig(
 
 schema = """
 Tables:
-- biosecurity_form(id, case_id, farm_location, breach_type, affected_area, timestamp)
-- mortality_form(id, case_id, number_dead, cause_of_death, timestamp)
-- health_status_form(id, case_id, symptoms_observed, vet_comments, timestamp)
-- issues(id, title, description, farm_name, status, assigned_team, case_id, created_at, updated_at)
+- flock_farm_information(id, case_id, type_of_chicken, age_of_chicken, housing_type, number_of_affected_flocks, feed_type, environment_information, timestamp)
+- symptoms_performance_data(id, case_id, main_symptoms, daily_production_performance, pattern_of_spread_or_drop, timestamp)
+- medical_diagnostic_records(id, case_id, vaccination_history, lab_data, pathology_findings_necropsy, current_treatment, management_questions, timestamp)
+- issues(id, title, description, farm_name, status, close_reason, assigned_team, case_id, created_at, updated_at)
 - farmer_problem(id, case_id, problem_description, timestamp)
+- notifications(id, recipient_team, message, sent_at)
+- issue_attachments(id, case_id, file_name, file_path, uploaded_at)
 """
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-EMAIL_PASSKEY = os.getenv("EMAIL_PASSKEY")
+TELEGRAM_BOT_TOKEN = "7255871993:AAHG_tVO9yXXazo47mAmFruSOxlPwsqXSEE"
 user_state = {}
-
-def send_escalation_email(case_id: str, reason: str, case_info: str):
-    try:
-        msg = EmailMessage()
-        msg["Subject"] = f"🚨 Escalation Notice: Case #{case_id}"
-        msg["From"] = "2006limjy@gmail.com"
-        msg["To"] = "2006limjy@gmail.com"
-
-        msg.set_content(f"""
-A case has been escalated by a sales user.
-
-Case ID: {case_id}
-Reason for Escalation:
-{reason}
-
-Case Details:
-{case_info}
-
-Please review and follow up promptly, thank you.
-""")
-
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login("2006limjy@gmail.com", EMAIL_PASSKEY)
-            smtp.send_message(msg)
-
-        return True
-    except Exception as e:
-        print(f"❌ Error sending email: {e}")
-        return False
 
 def get_main_menu_buttons():
     keyboard = [
@@ -81,8 +50,7 @@ def get_main_menu_buttons():
             InlineKeyboardButton("View All Issues", callback_data="view_all_issues")
         ],
         [
-            InlineKeyboardButton("Close Case", callback_data="close_case"),
-            InlineKeyboardButton("Escalate Case", callback_data="escalate_case")
+            InlineKeyboardButton("Close Case", callback_data="close_case")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -123,9 +91,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"action": "closing_case", "step": "awaiting_case_id"}
         await query.edit_message_text("📥 Please enter the Case ID for the case you want to close.")
 
-    elif query.data == "escalate_case":
-        user_state[user_id] = {"action": "escalating_case", "step": "awaiting_case_id"}
-        await query.edit_message_text("📥 Please enter the Case ID for the case you want to escalate.")
 
 async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -189,33 +154,6 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await show_main_menu(update)
             else:
                 await update.message.reply_text("❗ Please upload a document or type 'skip' to proceed without one.")
-
-    elif state["action"] == "escalating_case":
-        if state["step"] == "awaiting_case_id":
-            if not user_input.isdigit():
-                await update.message.reply_text("❗ Please enter a valid numeric Case ID.")
-                return
-
-            if not check_case_exists(user_input):
-                await update.message.reply_text(f"❌ Case ID {user_input} does not exist.")
-                return
-
-            state["case_id"] = user_input
-            state["step"] = "awaiting_reason"
-            await update.message.reply_text(f"📝 Please enter the reason for escalating the case {user_input}:")
-
-        elif state["step"] == "awaiting_reason":
-            reason = user_input
-            case_info = get_case_info(state["case_id"])
-            success = send_escalation_email(state["case_id"], reason, case_info)
-
-            if success:
-                await update.message.reply_text(f"✅ Case {state['case_id']} has been escalated and the technical team has been notified.")
-            else:
-                await update.message.reply_text("❌ Failed to send the escalation email. Please try again later.")
-
-            user_state.pop(user_id)
-            await show_main_menu(update)
 
     elif state["action"] == "case_summary":
         await update.message.reply_text("⏳ Generating case summary...")

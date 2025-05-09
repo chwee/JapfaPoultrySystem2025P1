@@ -11,32 +11,39 @@ def init_db():
         # === Core Tables ===
 
         c.execute('''
-            CREATE TABLE IF NOT EXISTS biosecurity_form (
+            CREATE TABLE IF NOT EXISTS flock_farm_information (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 case_id INTEGER,
-                farm_location TEXT,
-                breach_type TEXT,
-                affected_area TEXT,
+                type_of_chicken TEXT,
+                age_of_chicken INTEGER,
+                housing_type TEXT,
+                number_of_affected_flocks INTEGER,
+                feed_type TEXT,
+                environment_information TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
         c.execute('''
-            CREATE TABLE IF NOT EXISTS mortality_form (
+            CREATE TABLE IF NOT EXISTS symptoms_performance_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 case_id INTEGER,
-                number_dead INTEGER,
-                cause_of_death TEXT,
+                main_symptoms TEXT,
+                daily_production_performance TEXT,
+                pattern_of_spread_or_drop TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
         c.execute('''
-            CREATE TABLE IF NOT EXISTS health_status_form (
+            CREATE TABLE IF NOT EXISTS medical_diagnostic_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 case_id INTEGER,
-                symptoms_observed TEXT,
-                vet_comments TEXT,
+                vaccination_history TEXT,
+                lab_data TEXT,
+                pathology_findings_necropsy TEXT,
+                current_treatment TEXT,
+                management_questions TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -87,25 +94,33 @@ def init_db():
 
         # === Sample Test Data ===
 
+        # Example Insert into flock_farm_information
         c.execute('''
-            INSERT INTO biosecurity_form (case_id, farm_location, breach_type, affected_area)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO flock_farm_information (
+                case_id, type_of_chicken, age_of_chicken, housing_type,
+                number_of_affected_flocks, feed_type, environment_information
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
-            123, 'New Zealand', 'Fencing failure', 'Southern pasture'
+            123, 'Layer', 1, 'Closed House', 2, 'Complete Feed', 'Humid, nearby farm within 1 km'
         ))
 
+        # Example Insert into symptoms_performance_data
         c.execute('''
-            INSERT INTO mortality_form (case_id, number_dead, cause_of_death)
-            VALUES (?, ?, ?)
+            INSERT INTO symptoms_performance_data (
+                case_id, main_symptoms, daily_production_performance, pattern_of_spread_or_drop
+            ) VALUES (?, ?, ?, ?)
         ''', (
-            123, 15, 'Unknown sudden death'
+            123, 'Coughing, sneezing', '{"mortality": 5, "HD%": 92, "feed intake": "low"}', 'Gradual drop in feed intake over 3 days'
         ))
 
+        # Example Insert into medical_diagnostic_records
         c.execute('''
-            INSERT INTO health_status_form (case_id, symptoms_observed, vet_comments)
-            VALUES (?, ?, ?)
+            INSERT INTO medical_diagnostic_records (
+                case_id, vaccination_history, lab_data,
+                pathology_findings_necropsy, current_treatment, management_questions
+            ) VALUES (?, ?, ?, ?, ?, ?)
         ''', (
-            123, 'No visible symptoms, but abnormal behavior', 'Observation required over next 48 hours.'
+            123, 'IBD, NDV vaccines given', 'Pending', 'Mild hemorrhaging in intestines', 'Tylosin added to water', 'Should we isolate the flock?'
         ))
 
         c.execute('''

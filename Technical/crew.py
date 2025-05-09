@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew
+from Sales.test_free_text_in_telegram import generate_and_execute_sql
 
 # === CONFIGURATION ===
 UPLOAD_DIR = "uploads"
@@ -14,16 +15,27 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+schema = """
+Tables:
+- flock_farm_information(id, case_id, type_of_chicken, age_of_chicken, housing_type, number_of_affected_flocks, feed_type, environment_information, timestamp)
+- symptoms_performance_data(id, case_id, main_symptoms, daily_production_performance, pattern_of_spread_or_drop, timestamp)
+- medical_diagnostic_records(id, case_id, vaccination_history, lab_data, pathology_findings_necropsy, current_treatment, management_questions, timestamp)
+- issues(id, title, description, farm_name, status, close_reason, assigned_team, case_id, created_at, updated_at)
+- farmer_problem(id, case_id, problem_description, timestamp)
+- notifications(id, recipient_team, message, sent_at)
+- issue_attachments(id, case_id, file_name, file_path, uploaded_at)
+"""
+
 # === DATABASE UTILS ===
-def save_attachment(case_id, file_name, file_path):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO issue_attachments (case_id, file_name, file_path) VALUES (?, ?, ?)",
-        (case_id, file_name, file_path)
-    )
-    conn.commit()
-    conn.close()
+# def save_attachment(case_id, file_name, file_path):
+#     conn = sqlite3.connect(DB_PATH)
+#     cursor = conn.cursor()
+#     cursor.execute(
+#         "INSERT INTO issue_attachments (case_id, file_name, file_path) VALUES (?, ?, ?)",
+#         (case_id, file_name, file_path)
+#     )
+#     conn.commit()
+#     conn.close()
 
 # === FILE PROCESSING ===
 def extract_text(file_path):
@@ -44,18 +56,10 @@ relevance_agent = Agent(
     allow_delegation=False
 )
 
-summary_agent = Agent(
-    role="Summary Writer",
-    goal="Summarize uploaded technical files with context to the reported issue",
-    backstory="You are responsible for summarizing and highlighting key evidence in uploads for technical reviews.",
-    verbose=True,
-    allow_delegation=False
-)
-
 def run_upload_analysis(case_id, file_path):
     file_name = os.path.basename(file_path)
     file_text = extract_text(file_path)
-    save_attachment(case_id, file_name, file_path)
+    generate_and_execute_sql(schema=schema, action_type="insert_attachment", case_id=case_id, file_path=file_path, file_name=file_name)
 
     # Adjust task to expect structured response
     relevance_task = Task(
@@ -66,16 +70,8 @@ def run_upload_analysis(case_id, file_path):
         output_file="relevance.txt"
     )
 
-    # summary_task = Task(
-    #     description=f"Summarize this file in the context of case {case_id}: {file_text[:1000]}. "
-    #                 "Please provide the summary as a string.",
-    #     agent=summary_agent,
-    #     expected_output="A short paragraph summarizing the file's content and its relevance",
-    #     output_file="summary.txt"
-    # )
-
     crew = Crew(
-        agents=[relevance_agent, summary_agent],
+        agents=[relevance_agent],
         tasks=[relevance_task],
         verbose=True
     )
@@ -85,4 +81,4 @@ def run_upload_analysis(case_id, file_path):
 # case_id = 123
 # file_path = 'C:/Users/Jia Ying/Downloads/24S1_DList_Cert.pdf'
 
-# result = run_upload_analysis(case_id, file_path)
+# run_upload_analysis(case_id, file_path)

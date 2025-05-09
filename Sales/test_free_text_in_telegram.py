@@ -42,14 +42,15 @@ class SQLiteTool(BaseTool):
     async def _arun(self, query: str) -> str:
         return self._run(query)
 
-# Replace this with your schema
 schema = """
 Tables:
-- biosecurity_form(id, case_id, farm_location, breach_type, affected_area, timestamp)
-- mortality_form(id, case_id, number_dead, cause_of_death, timestamp)
-- health_status_form(id, case_id, symptoms_observed, vet_comments, timestamp)
-- issues(id, title, description, farm_name, status, assigned_team, case_id, created_at, updated_at)
+- flock_farm_information(id, case_id, type_of_chicken, age_of_chicken, housing_type, number_of_affected_flocks, feed_type, environment_information, timestamp)
+- symptoms_performance_data(id, case_id, main_symptoms, daily_production_performance, pattern_of_spread_or_drop, timestamp)
+- medical_diagnostic_records(id, case_id, vaccination_history, lab_data, pathology_findings_necropsy, current_treatment, management_questions, timestamp)
+- issues(id, title, description, farm_name, status, close_reason, assigned_team, case_id, created_at, updated_at)
 - farmer_problem(id, case_id, problem_description, timestamp)
+- notifications(id, recipient_team, message, sent_at)
+- issue_attachments(id, case_id, file_name, file_path, uploaded_at)
 """
 
 sqlite_tool = SQLiteTool(db_path="poultry_data.db")
@@ -64,18 +65,9 @@ sql_agent = Agent(
     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)
 )
 
-issue_management_agent = Agent(
-    role="Issue Management Agent",
-    goal="Generate case summaries, form reports, and system statistics.",
-    backstory="An expert agent responsible for reviewing cases and forms to help the sales and technical teams.",
-    tools=[sqlite_tool],
-    allow_delegation=True,
-    llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)
-)
-
 status_update_agent = Agent(
     role="Status Update Agent",
-    goal="Help Sales/Technical team mark issues as 'Closed' or 'Needs Tech Help'.",
+    goal="Help Sales/Technical team mark issues as 'Closed' or assigned_team as 'Technical'.",
     backstory="An expert in updating issue statuses and generating appropriate SQL queries to reflect changes.",
     allow_delegation=False,
     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)
@@ -91,7 +83,8 @@ report_generation_agent = Agent(
 )
 
 # TASKS
-def generate_and_execute_sql(schema: str, db_path: str = "poultry_data.db", action_type: str = None, case_id: int = None, user_input:str = None) -> dict:
+def generate_and_execute_sql(schema: str, db_path: str = "poultry_data.db", action_type: str = None, case_id: int = None, 
+                             user_input:str = None, file_path:str = None, file_name:str = None) -> dict:
     if user_input is None:
         # Create the SQL generation prompt
         if action_type == "case_summary":
@@ -99,7 +92,11 @@ def generate_and_execute_sql(schema: str, db_path: str = "poultry_data.db", acti
         elif action_type == "generate_report":
             user_input = f"Generate a full report for case ID {case_id}."
         elif action_type == "view_all_issues":
-            user_input = "Retrieve all issues from the issues table."
+            user_input = "Retrieve ALL issues, regardless of their status from the issues table."
+        elif action_type == "insert_attachment":
+            if not (case_id , file_path and file_name):
+                raise ValueError("case_id, file_path and file_name are required for inserting attachment.")
+            user_input = f"Insert a new attachment for case_id {case_id} with file_path as '{file_path}' and file_name as '{file_name}' into the issue_attachments table."
         else:
             raise ValueError("Unknown action_type")
     
@@ -113,7 +110,6 @@ You are an SQL generation agent. Your job is to generate **parameterized SQL** s
 Instructions:
 - Use the known form schemas listed below.
 - Check all tables listed.
-- Each query must only return rows where *all fields are non-null and non-empty ('')*.
 - Replace placeholders with provided values (e.g., case_id = 123).
 - Do NOT return explanations, only the SQL queries.
 - Return the output in **JSON format** with keys as table names and values as SQL strings.
@@ -203,20 +199,20 @@ def generate_individual_case_summary(case_id):
     You have been given the following results from SQL queries on case_id {case_id}. Your task is to generate a high-level summary of the following forms.
 
     --- SQL RESULTS ---
-    Biosecurity Form Results:
-    {biosecurity_form_results}
+    Flock Farm Information Form Results:
+    {flock_farm_information_results}
 
-    Mortality Form Results:
-    {mortality_form_results}
+    Symptoms Performance Data Form Results:
+    {symptoms_performance_data_results}
 
-    Health Status Form Results:
-    {health_status_form_results}
+    Medical Diagnostic Records Form Results:
+    {medical_diagnostic_records_results}
 
     Format the output as follows:
     "Case #{case_id}:\n\n"
-    "Biosecurity Form: <short summary>\n"
-    "Mortality Form: <short summary>\n"
-    "Health Status Form: <short summary>\n"
+    "Flock Farm Information: <short summary>\n"
+    "Symptoms Performance: <short summary>\n"
+    "Medical Diagnostic Records: <short summary>\n"
     """
 
     execution_results_for_case_summary = generate_and_execute_sql(action_type='case_summary', case_id=case_id, schema=schema)
@@ -224,9 +220,9 @@ def generate_individual_case_summary(case_id):
     # Generate the formatted report using the results from the SQL execution
     case_summary_task_description_filled = case_summary_task_description.format(
         case_id=case_id,
-        biosecurity_form_results=execution_results_for_case_summary.get('biosecurity_form', 'No data available.'),
-        mortality_form_results=execution_results_for_case_summary.get('mortality_form', 'No data available.'),
-        health_status_form_results=execution_results_for_case_summary.get('health_status_form', 'No data available.')
+        flock_farm_information_results=execution_results_for_case_summary.get('flock_farm_information', 'No data available.'),
+        symptoms_performance_data_results=execution_results_for_case_summary.get('symptoms_performance_data', 'No data available.'),
+        medical_diagnostic_records_results=execution_results_for_case_summary.get('medical_diagnostic_records', 'No data available.')
     )
 
     case_summary_task = Task(
@@ -249,30 +245,30 @@ def generate_report_for_forms(case_id):
     You have been given the following results from SQL queries on case_id {case_id}. Your task is to generate a comprehensive report including the data from the forms.
 
     --- SQL RESULTS ---
-    Biosecurity Form Results:
-    {biosecurity_form_results}
+   Flock Farm Information Form Results:
+    {flock_farm_information_results}
 
-    Mortality Form Results:
-    {mortality_form_results}
+    Symptoms Performance Data Form Results:
+    {symptoms_performance_data_results}
 
-    Health Status Form Results:
-    {health_status_form_results}
+    Medical Diagnostic Records Form Results:
+    {medical_diagnostic_records_results}
 
     Farmer's Problem:
     {farmer_problem_results}
 
     Format the output as follows:
-    Biosecurity Form for Case #{case_id}:
+    Flock Farm Information for Case #{case_id}:
     - Field Name 1 — Value 1
     - Field Name 2 — Value 2
     ...
 
-    Mortality Form for Case #{case_id}:
+    Symptoms Performance for Case #{case_id}:
     - Field Name 1 — Value 1
     - Field Name 2 — Value 2
     ...
 
-    Health Status Form for Case #{case_id}:
+    Medical Diagnostic Records for Case #{case_id}:
     - Field Name 1 — Value 1
     - Field Name 2 — Value 2
     ...
@@ -286,9 +282,9 @@ def generate_report_for_forms(case_id):
     # Generate the formatted report using the results from the SQL execution
     report_task_description_filled = report_task_description.format(
         case_id=case_id,
-        biosecurity_form_results=execution_results_for_full_report.get('biosecurity_form', 'No data available.'),
-        mortality_form_results=execution_results_for_full_report.get('mortality_form', 'No data available.'),
-        health_status_form_results=execution_results_for_full_report.get('health_status_form', 'No data available.'),
+        flock_farm_information_results=execution_results_for_full_report.get('flock_farm_information', 'No data available.'),
+        symptoms_performance_data_results=execution_results_for_full_report.get('symptoms_performance_data', 'No data available.'),
+        medical_diagnostic_records_results=execution_results_for_full_report.get('medical_diagnostic_records', 'No data available.'),
         farmer_problem_results=execution_results_for_full_report.get('farmer_problem', 'No data available.')
     )
 
@@ -384,17 +380,6 @@ def generate_summary_of_all_issues():
     return summary_crew.kickoff()
 
 # Task for Status Update
-def execute_generated_sql(sql: str):
-    """Execute a dynamically generated SQL statement."""
-    try:
-        conn = sqlite3.connect("poultry_data.db")
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"❌ Error executing SQL: {e}")
-
 def check_case_exists(case_id: str) -> bool:
     try:
         # Connect to the SQLite database
@@ -412,23 +397,6 @@ def check_case_exists(case_id: str) -> bool:
     except Exception as e:
         print(f"Error checking case ID in DB: {e}")
         return False
-
-def manually_update_case(case_id: str, reason: str):
-    """Update the status of a case directly in the database."""
-    sql = f"""
-        UPDATE issues 
-        SET status = 'Closed', close_reason = '{reason}' 
-        WHERE case_id = {case_id};
-    """
-    execute_generated_sql(sql)
-
-def close_case_with_reason(case_id: str, reason: str) -> str:
-    """Close the case with a provided reason."""
-    try:
-        manually_update_case(case_id, reason)
-        return f"Case {case_id} has been closed successfully with reason: {reason}"
-    except Exception as e:
-        return f"❌ Error: {e}"
     
 def execute_case_closing(case_id: str, reason: str) -> str:
     """Close a case using CrewAI's task execution flow."""
@@ -446,18 +414,21 @@ def execute_case_closing(case_id: str, reason: str) -> str:
     )
     return crew.kickoff()
 
-def get_case_info(case_id: str) -> str:
-    conn = sqlite3.connect("poultry_data.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM issues WHERE case_id = ?", (case_id,))
-    row = cursor.fetchone()
-    conn.close()
+def execute_case_escalation(case_id: str) -> str:
+    """Escalate a case using CrewAI's task execution flow."""
+    escalate_task = Task(
+        description=f"Update the 'assigned_team' field to 'Technical' for case ID {case_id} in the 'issues' table.",
+        agent=status_update_agent,
+        tools=[sqlite_tool],
+        expected_output="Confirmation that the case has been escalated to the Technical team."
+    )
 
-    if not row:
-        return "No case information found."
-
-    columns = ["case_id", "status", "description", "close_reason", "created_at"]  # Update based on actual schema
-    return "\n".join(f"{col}: {val}" for col, val in zip(columns, row))
+    crew = Crew(
+        agents=[status_update_agent],
+        tasks=[escalate_task],
+        verbose=True
+    )
+    return crew.kickoff()
 
 # case_id = int(input("Enter the case ID: "))
 # prompt = input("Enter the prompt: ")
