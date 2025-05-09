@@ -19,70 +19,96 @@ SELECTING_FORM, SELECTING_QUESTION, ENTERING_ANSWER = range(3)
 
 form_definitions = {
     "flock_farm_information": {
-        "Type of Chicken": "What type of chicken is this? (e.g., Layer, Broiler, Breeder)",
-        "Age of Chicken": "What is the age of the chicken? (years, round up to nearest whole number)",
-        "Housing Type": "What housing type is used? (e.g., Closed House, Opened-Side)",
-        "Number of Affected Flocks/Houses": "How many flocks or houses are affected?",
-        "Feed Type": "What type of feed is used? (e.g., Complete Feed, Self Mix)",
-        "Environment Information": "Describe the environmental conditions (e.g., climate, weather, cage atmosphere, nearby poultry farms)"
+        "Type of Chicken": {
+            "question": "What type of chicken is this? (e.g., Layer, Broiler, Breeder)",
+            "type": "TEXT",
+            "validator": lambda x: x.lower() in ["layer", "broiler", "breeder"],
+            "use_agent": False
+        },
+        "Age of Chicken": {
+            "question": "What is the age of the chicken? (years, round up to nearest whole number)",
+            "type": "INTEGER",
+            "validator": lambda x: x.isdigit() and int(x) > 0 and int(x) < 50,
+            "use_agent": False
+        },
+        "Housing Type": {
+            "question": "What housing type is used? (e.g., Closed House, Opened-Side)",
+            "type": "TEXT",
+            "validator": lambda x: x.lower() in ["closed house", "opened-side", "open-sided", "open house"],
+            "use_agent": False
+        },
+        "Number of Affected Flocks/Houses": {
+            "question": "How many flocks or houses are affected?",
+            "type": "INTEGER",
+            "validator": lambda x: x.isdigit() and int(x) >= 0,
+            "use_agent": False
+        },
+        "Feed Type": {
+            "question": "What type of feed is used? (e.g., Complete Feed, Self Mix)",
+            "type": "TEXT",
+            "validator": lambda x: x.lower() in ["complete feed", "self mix"],
+            "use_agent": False
+        },
+        "Environment Information": {
+            "question": "Describe the environmental conditions (e.g., climate, weather, cage atmosphere, nearby poultry farms)",
+            "type": "TEXT",
+            "validator": lambda x: len(x.strip()) > 10,
+            "use_agent": True
+        }
     },
-    "symptoms_performance_data": {
-        "Main Symptoms": "What are the main symptoms or clinical signs observed?",
-        "Daily Production Performance": "Provide daily chicken production data (e.g., mortality, %HD, feed intake, egg weight)",
-        "Pattern of Spread or Drop": "Describe if there's mortality, production drop, or spreading pattern"
-    },
-    "medical_diagnostic_records": {
-        "Vaccination History": "What is the vaccination history or program followed?",
-        "Lab Data": "Provide any lab results or data if available",
-        "Pathology Findings (Necropsy)": "List any pathology anatomy changes found during necropsy",
-        "Current Treatment": "What treatment is currently being administered?",
-        "Management Questions": "List any management-related concerns or questions"
-    }
-}
 
-form_definitions_types = {
-    "flock_farm_information": {
-        "Type of Chicken": "TEXT",
-        "Age of Chicken": "INTEGER",
-        "Housing Type": "TEXT",
-        "Number of Affected Flocks/Houses": "INTEGER",
-        "Feed Type": "TEXT",
-        "Environment Information": "TEXT"
-    },
     "symptoms_performance_data": {
-        "Main Symptoms": "TEXT",
-        "Daily Production Performance": "TEXT",  # Can be JSON or text-encoded data
-        "Pattern of Spread or Drop": "TEXT"
+        "Main Symptoms": {
+            "question": "What are the main symptoms or clinical signs observed?",
+            "type": "TEXT",
+            "validator": lambda x: len(x.strip()) > 5,
+            "use_agent": True
+        },
+        "Daily Production Performance": {
+            "question": "Provide daily chicken production data (e.g., mortality, %HD, feed intake, egg weight)",
+            "type": "TEXT",
+            "validator": lambda x: len(x.strip()) > 5,
+            "use_agent": True
+        },
+        "Pattern of Spread or Drop": {
+            "question": "Describe if there's mortality, production drop, or spreading pattern",
+            "type": "TEXT",
+            "validator": lambda x: len(x.strip()) > 5,
+            "use_agent": True
+        }
     },
-    "medical_diagnostic_records": {
-        "Vaccination History": "TEXT",
-        "Lab Data": "TEXT",
-        "Pathology Findings (Necropsy)": "TEXT",
-        "Current Treatment": "TEXT",
-        "Management Questions": "TEXT"
-    }
-}
 
-form_validation = {
-    "flock_farm_information": {
-        "Type of Chicken": lambda x: x.lower() in ["layer", "broiler", "breeder"],
-        "Age of Chicken": lambda x: x.isdigit() and 0 < int(x) < 200,
-        "Housing Type": lambda x: x.lower() in ["closed house", "opened-side", "open-sided", "open house"],
-        "Number of Affected Flocks/Houses": lambda x: x.isdigit() and int(x) >= 0,
-        "Feed Type": lambda x: x.lower() in ["complete feed", "self mix"],
-        "Environment Information": lambda x: len(x.strip()) > 10
-    },
-    "symptoms_performance_data": {
-        "Main Symptoms": lambda x: len(x.strip()) > 5,
-        "Daily Production Performance": lambda x: len(x.strip()) > 5,
-        "Pattern of Spread or Drop": lambda x: len(x.strip()) > 5
-    },
     "medical_diagnostic_records": {
-        "Vaccination History": lambda x: len(x.strip()) > 5,
-        "Lab Data": lambda x: len(x.strip()) > 5,
-        "Pathology Findings (Necropsy)": lambda x: len(x.strip()) > 5,
-        "Current Treatment": lambda x: len(x.strip()) > 5,
-        "Management Questions": lambda x: len(x.strip()) > 5
+        "Vaccination History": {
+            "question": "What is the vaccination history or program followed?",
+            "type": "TEXT",
+            "validator": lambda x: len(x.strip()) > 5,
+            "use_agent": True
+        },
+        "Lab Data": {
+            "question": "Provide any lab results or data if available",
+            "type": "TEXT",
+            "validator": lambda x: len(x.strip()) > 5,
+            "use_agent": True
+        },
+        "Pathology Findings (Necropsy)": {
+            "question": "List any pathology anatomy changes found during necropsy",
+            "type": "TEXT",
+            "validator": lambda x: len(x.strip()) > 5,
+            "use_agent": True
+        },
+        "Current Treatment": {
+            "question": "What treatment is currently being administered?",
+            "type": "TEXT",
+            "validator": lambda x: len(x.strip()) > 5,
+            "use_agent": True
+        },
+        "Management Questions": {
+            "question": "List any management-related concerns or questions",
+            "type": "TEXT",
+            "validator": lambda x: len(x.strip()) > 5,
+            "use_agent": True
+        }
     }
 }
 
@@ -100,7 +126,11 @@ user_session_data = {}
 
 # DB Setup
 def init_db(form_definitions_types):
-    sql_block = db_init_agent(form_definitions_types)
+    form_types = {
+        form: {q: meta["type"] for q, meta in fields.items()}
+        for form, fields in form_definitions.items()
+    }
+    sql_block = db_init_agent(form_types)
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -237,7 +267,7 @@ async def select_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = query.data.split(":")[1]
     user_session_data[user_id]["current_question"] = question
     form = user_session_data[user_id]["current_form"]
-    await query.edit_message_text(form_definitions[form][question])
+    await query.edit_message_text(form_definitions[form][question]["question"])
     return ENTERING_ANSWER
 
 async def enter_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -246,39 +276,54 @@ async def enter_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = user_session_data[user_id].get("current_question")
     form = user_session_data[user_id]["current_form"]
 
-    # Get validator for this field
-    validator = form_validation.get(form, {}).get(question)
+    field_meta = form_definitions[form][question]
+    validator = field_meta.get("validator")
+    use_agent = field_meta.get("use_agent")
 
+    # Step 1: Local validation (fast fail for known structured fields)
     if validator and not validator(answer):
         dynamic_error = local_validator(question, validator)
         await update.message.reply_text(dynamic_error)
-        await update.message.reply_text(form_definitions[form][question])
+        await update.message.reply_text(field_meta["question"])
         return ENTERING_ANSWER
 
-    # ✅ Extra validation for TEXT responses using agent (only if local passed)
-    if validator and "strip" in inspect.getsource(validator):
-        form_question_map = form_definitions[form]
-        validator_output, error_message = data_validator_agent(
+    # Step 2: Run AI-based validator (only if marked to use agent)
+    if validator and use_agent:
+        validator_output, processed_answer = data_validator_agent(
             question=question,
             answer=answer,
-            form_def=form_question_map,
-            form_val=form_validation
+            form_def={q: form_definitions[form][q]["question"] for q in form_definitions[form]},
+            form_val={form: {q: form_definitions[form][q]["validator"] for q in form_definitions[form]}}
         )
+
         print("🧪 Validator Output:", repr(validator_output))
-        if not validator_output.strip().startswith("✅ Valid"):
-            await update.message.reply_text(error_message or validator_output)
-            await update.message.reply_text(form_question_map[question])
+        print("🧪 Answer Returned:", repr(processed_answer))
+
+        # Handle invalid/suspicious result
+        if not validator_output.strip().startswith("✅"):
+            await update.message.reply_text(processed_answer or validator_output)
+            await update.message.reply_text(field_meta["question"])
             return ENTERING_ANSWER
 
-    # Save valid answer
+        # If valid and autocorrected, update answer
+        if processed_answer != "valid" and processed_answer != answer:
+            answer = processed_answer
+            await update.message.reply_text(f"✅ Answer accepted (autocorrected to: {answer})")
+        else:
+            await update.message.reply_text("✅ Answer accepted.")
+    else:
+        # No agent needed, proceed
+        await update.message.reply_text("✅ Answer accepted.")
+
+    # Save the answer into session
     user_session_data[user_id]["forms"][form][question] = answer
 
+    # All questions done for the form?
     if len(user_session_data[user_id]["forms"][form]) == len(form_definitions[form]):
         await update.message.reply_text("✅ All questions answered! Returning to main menu...")
         return await start(update, context, preserve_session=True)
     else:
-        await update.message.reply_text("✅ Answer saved.")
-
+        # More questions remain
         class FakeQuery:
             async def edit_message_text(self, text, reply_markup=None):
                 await context.bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
@@ -291,18 +336,19 @@ def local_validator(question, validator):
 
         # 🧠 Detect number validation
         if "x.isdigit()" in src:
-            # Check if there's a numeric range check
-            match = re.search(r"int\(x\)\s*([<>]=?)\s*(\d+)", src)
-            if match:
-                operator, threshold = match.groups()
-                operators = {
-                    ">": "greater than",
-                    ">=": "greater than or equal to",
-                    "<": "less than",
-                    "<=": "less than or equal to"
-                }
-                op_text = operators.get(operator, operator)
-                return f"⚠️ Please enter only a number {op_text} {threshold}."
+            matches = re.findall(r"int\(x\)\s*([<>]=?)\s*(\d+)", src)
+            if matches:
+                parts = []
+                for operator, threshold in matches:
+                    threshold = int(threshold)
+                    op_map = {
+                        ">": f"greater than {threshold}",
+                        ">=": f"greater than or equal to {threshold}",
+                        "<": f"less than {threshold}",
+                        "<=": f"less than or equal to {threshold}"
+                    }
+                    parts.append(op_map.get(operator, f"{operator} {threshold}"))
+                return f"⚠️ Please enter only a number that is " + " and ".join(parts) + "."
             else:
                 return "⚠️ Please enter only a number."
 
@@ -316,17 +362,17 @@ def local_validator(question, validator):
 
         # 🧠 Detect length checks
         elif "len(x.strip())" in src:
-            match = re.findall(r"len\(x\.strip\(\)\)\s*([<>]=?)\s*(\d+)", src)
-            if match:
+            matches = re.findall(r"len\(x\.strip\(\)\)\s*([<>]=?)\s*(\d+)", src)
+            if matches:
                 msgs = []
-                for operator, length in match:
-                    operators = {
+                for operator, length in matches:
+                    op_map = {
                         ">": f"at least {int(length)+1} characters",
                         ">=": f"{length} or more characters",
                         "<": f"fewer than {length} characters",
                         "<=": f"{length} or fewer characters"
                     }
-                    msgs.append(operators.get(operator, f"length condition ({operator} {length})"))
+                    msgs.append(op_map.get(operator, f"{operator} {length} characters"))
                 return "⚠️ Please enter text with " + " and ".join(msgs) + "."
             return "⚠️ Input length does not meet requirements."
 
@@ -342,8 +388,13 @@ async def save_quit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = user_session_data.get(user_id)
     if session:
         case_id = str(uuid.uuid4())
+        
     user_prompt = intent_dict["insert_into_db"]
-    sql_dict = ast.literal_eval(dynamic_sql_agent(user_prompt, form_definitions_types))
+    form_types = {
+        form: {q: meta["type"] for q, meta in fields.items()}
+        for form, fields in form_definitions.items()
+    }
+    sql_dict = ast.literal_eval(dynamic_sql_agent(user_prompt, form_types))
 
     for form_name in form_definitions.keys():
         answers = session.get("forms", {}).get(form_name, {})
@@ -359,7 +410,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not os.path.exists(DB_PATH):
         print("Database not found. Initializing...")
-        init_db(form_definitions_types)
+        init_db(form_definitions)
     else:
         print("Database already exists. Skipping initialization.")
         

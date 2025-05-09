@@ -376,30 +376,20 @@ def describe_validation_for_question(question, form_validation):
                 return f"Could not extract rule due to error: {e}"
     return "No validation rule found for this question."
 
-def data_validator_agent(question: str, answer: str, form_def: dict, form_val: dict):
-    validation_description = describe_validation_for_question(question, form_val)
-    prompt_question = form_def.get(question, question)
 
-    # Define the Agent
+def validation_agent(question: str, answer: str, form_def: dict, form_val: dict):
+    prompt_question = form_def.get(question, question)
+    validation_description = describe_validation_for_question(question, form_val)
+
     validator_agent = Agent(
         role="Answer Validator",
         goal="Ensure user answers are valid, complete, and relevant to the question and rules.",
-        backstory="You are a quality control assistant helping validate data entry in a form-based system. You check whether answers make sense given the question and known validation rules.",
-        verbose=True,
-        allow_delegation=False,
-        llm=ChatOpenAI(model_name="gpt-4o")
-    )
-    
-    error_response_agent = Agent(
-        role="Error Message Composer",
-        goal="Generate helpful error responses for invalid user input.",
-        backstory="You help users correct their data entry by generating clear, friendly, and instructional error messages based on validation feedback.",
+        backstory="You are a quality control assistant helping validate data entry in a form-based system.",
         verbose=True,
         allow_delegation=False,
         llm=ChatOpenAI(model_name="gpt-4o")
     )
 
-    # Define the Task
     validator_task = Task(
         description=f"""
         You are a form data validation assistant.
@@ -413,60 +403,124 @@ def data_validator_agent(question: str, answer: str, form_def: dict, form_val: d
 
         Please check if the answer is:
         1. Related to the question
-        2. Satisfies the base validation rule (e.g., number range, allowed options, etc.)
+        2. Satisfies the base validation rule
         3. Not suspicious, empty, or illogical
 
-        Return one of:
+        Return exactly one of:
         - ✅ Valid
-        - ⚠️ Invalid with reason (e.g., wrong type, too short, out of range)
-        - ❌ Suspicious or off-topic
+        - ⚠️ Invalid: followed by reason
+        - ❌ Suspicious: followed by reason
         """,
-        expected_output="A single-line response evaluating the answer as valid, invalid, or suspicious with brief reasoning.",
+        expected_output="A single-line output in the format: status + reason.",
         agent=validator_agent
     )
-    
+
+    result = Crew(agents=[validator_agent], tasks=[validator_task], verbose=False, memory=False).kickoff()
+    result = str(result).strip()
+
+    if result.startswith("✅"):
+        return "✅", ""
+    elif result.startswith("⚠️") or result.startswith("❌"):
+        parts = result.split(":", 1)
+        return parts[0].strip(), parts[1].strip() if len(parts) > 1 else "Unclear reason"
+    else:
+        return "⚠️", "Invalid format returned from validator"
+
+def error_message_agent(question: str, answer: str, form_def: dict, form_val: dict, validator_reason: str):
+    prompt_question = form_def.get(question, question)
+    validation_description = describe_validation_for_question(question, form_val)
+
+    error_response_agent = Agent(
+        role="Error Message Composer",
+        goal="Generate helpful error messages for invalid user input.",
+        backstory="You help users correct their answers with clear, friendly guidance.",
+        verbose=True,
+        allow_delegation=False,
+        llm=ChatOpenAI(model_name="gpt-4o")
+    )
+
     error_message_task = Task(
         description=f"""
-        If the answer is valid, return the word: valid
-        
-        Based on the user's answer and the validation rule below:
+        The user answered a form question, but their input was rejected.
 
         - **Question**: {prompt_question}
         - **Answer**: {answer}
         - **Validation Rule**: {validation_description}
+        - **Validator's Reason**: {validator_reason}
 
-        Generate a short, friendly, and specific error message that tells the user how to fix their input.
+        Your job:
+        - Write a friendly and helpful error message.
+        - Rephrase the validator's reason for clarity if needed.
+        - Suggest how to fix the answer, with examples if useful.
+        - If the answer was fine, return 'valid'
 
-        The message should:
-        - Be instructional (e.g., "Please enter a number greater than 5.")
-        - Use the Validation Rule for reference
-        - Give example of what an answer of the question should look like
-        - Mention what was wrong (e.g., too short, not a valid choice)
-        - Avoid technical jargon
-
-        Example: "Your answer seems too short. Please enter at least 10 characters."
-        Example: "Your answer is unrelated to Main Symptoms. Please enter something like high temperature fever." 
+        Example output: "Your answer is too short. Please enter at least 10 characters like: 'fever, nasal discharge'"
         """,
-        expected_output="Either 'valid' or a helpful and friendly error message using simple language.",
+        expected_output="A friendly error message or 'valid'.",
         agent=error_response_agent
     )
 
-    # Run the Crew
+    result = Crew(agents=[error_response_agent], tasks=[error_message_task], verbose=False, memory=False).kickoff()
+    return str(result).strip()
+
+def spelling_correction_agent(text: str, question: str = "") -> str:
+    spell_checker = Agent(
+        role="Spelling Correction Assistant",
+        goal="Check and optionally correct spelling errors in user inputs, only when confident.",
+        backstory="You help users by checking their answers for spelling mistakes and correcting them only if you are confident. If unsure, you return 'valid'.",
+        verbose=False,
+        allow_delegation=False,
+        llm=ChatOpenAI(model_name="gpt-4o")
+    )
+
+    check_task = Task(
+        description=f"""
+        Check if the following user input contains obvious spelling mistakes.
+        
+        - Question context: "{question}"
+        - User's input: "{text}"
+        
+        Instructions:
+        1. If the text contains **clear and confident** spelling errors, return the corrected version.
+           - Format: Corrected text only (e.g., "broiler" instead of "broiller")
+        2. If you are not confident, return exactly: **valid**
+        3. Do not explain your answer or ask the user. Just fix if sure, else ignore.
+        
+        Examples:
+        - Input: "broiller" → Output: "broiler"
+        - Input: "closed house" → Output: "closed house"
+        - Input: "typo maybe?" (unsure) → Output: valid
+        """,
+        expected_output="Either 'valid' or the corrected string.",
+        agent=spell_checker
+    )
+
     crew = Crew(
-        agents=[validator_agent, error_response_agent],
-        tasks=[validator_task, error_message_task],
+        agents=[spell_checker],
+        tasks=[check_task],
         verbose=False,
         memory=False
     )
 
     result = crew.kickoff()
-    
-    # Separate outputs by index (Task 0 = validator, Task 1 = error message)
-    if isinstance(result, list) and len(result) == 2:
-        validator_output, error_message_output = result
+    return str(result).strip()
+
+# Orchestrator function
+def data_validator_agent(question: str, answer: str, form_def: dict, form_val: dict):
+    # Step 1: Validate answer and capture reasoning
+    status, reason = validation_agent(question, answer, form_def, form_val)
+
+    if status == "✅":
+        # Step 2: Spell-check
+        corrected = spelling_correction_agent(answer, question=question)
+        if corrected != "valid" and corrected != answer:
+            return "✅ Valid (autocorrected)", corrected
+        else:
+            return "✅ Valid", answer
     else:
-        validator_output = str(result)
-        error_message_output = ""
-
-    return validator_output.strip(), error_message_output.strip()
-
+        # Step 3: Generate error message using validator's reason
+        error_message = error_message_agent(question, answer, form_def, form_val, validator_reason=reason)
+        return f"{status} {reason}", error_message
+    
+    
+    
