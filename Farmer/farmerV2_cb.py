@@ -5,12 +5,19 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ContextTypes, ConversationHandler, filters
 )
-from farmer_agents import dynamic_sql_agent, db_init_agent, data_validator_agent
+from farmer_agents import dynamic_sql_agent, db_init_agent, data_validator_agent, case_summary_agent, email_generator, send_email
 import ast
 import uuid
 import re
 import textwrap
 import inspect
+import asyncio
+from functools import partial
+import logging
+
+# Setup basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # States
 SELECTING_FORM, SELECTING_QUESTION, ENTERING_ANSWER = range(3)
@@ -210,6 +217,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, preserve_ses
     keyboard = [[InlineKeyboardButton(name.replace("_", " ").title(), callback_data=f"form:{name}")]
                 for name in form_definitions.keys()]
     keyboard.append([InlineKeyboardButton("💾 Save and Quit", callback_data="save_quit")])
+    keyboard.append([InlineKeyboardButton("📩 Submit & Email", callback_data="submit_and_email")])
     if update.message:
         await update.message.reply_text("📋 Choose a form to answer:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif update.callback_query:
@@ -380,6 +388,26 @@ def local_validator(question, validator):
 
     except Exception:
         return "⚠️ Invalid input. Please try again."
+    
+def is_all_form_data_complete(session: dict, form_definitions: dict) -> tuple[bool, list[tuple[str, str]]]:
+    """
+    Checks for completeness and identifies missing fields.
+
+    Returns:
+    - (True, []) if everything is filled
+    - (False, [(form, question_key), ...]) if missing fields exist
+    """
+    forms_data = session.get("forms", {})
+    missing_fields = []
+
+    for form_name, fields in form_definitions.items():
+        answers = forms_data.get(form_name, {})
+        for question_key in fields:
+            if question_key not in answers or not str(answers[question_key]).strip():
+                missing_fields.append((form_name, question_key))
+    
+    return (len(missing_fields) == 0), missing_fields
+
 
 async def save_quit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -403,6 +431,43 @@ async def save_quit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_session_data.pop(user_id, None)
     return ConversationHandler.END
 
+async def submit_and_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    session = user_session_data.get(user_id)
+
+    logger.info(f"📨 [User {user_id}] Triggered Submit & Email (no validation or DB).")
+
+    if not session:
+        logger.warning(f"⚠️ [User {user_id}] No session found.")
+        await query.edit_message_text("⚠️ No session found. Please start a new form entry.")
+        return ConversationHandler.END
+
+    form_responses = session.get("forms", {})
+    summary = case_summary_agent(form_responses)
+    logger.info(f"📄 [User {user_id}] Summary generated.")
+
+    user_name = update.effective_user.full_name
+    email_html = email_generator(summary, form_responses, user_name=user_name)
+
+    try:
+        send_email(
+            to_email="japfanotifier@gmail.com",
+            subject="New Poultry Case Submission",
+            html_content=email_html
+        )
+        await query.edit_message_text("📩 Case submitted and emailed successfully. Thank you!")
+        logger.info(f"📧 [User {user_id}] Email sent successfully.")
+    except Exception as e:
+        logger.error(f"❌ [User {user_id}] Failed to send email: {e}", exc_info=True)
+        await query.edit_message_text("⚠️ Submission failed during email sending. Please try again later.")
+        return ConversationHandler.END
+
+    # Clear session after email
+    user_session_data.pop(user_id, None)
+    return ConversationHandler.END
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
@@ -421,7 +486,8 @@ def main():
         states={
             SELECTING_FORM: [
                 CallbackQueryHandler(select_form, pattern="^form:"),
-                CallbackQueryHandler(save_quit, pattern="^save_quit$")
+                CallbackQueryHandler(save_quit, pattern="^save_quit$"),
+                CallbackQueryHandler(submit_and_email, pattern="^submit_and_email$")
             ],
             SELECTING_QUESTION: [
                 CallbackQueryHandler(select_question, pattern="^question:"),
