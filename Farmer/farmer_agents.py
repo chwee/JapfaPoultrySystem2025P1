@@ -602,7 +602,7 @@ def case_summary_agent(form_responses: dict) -> str:
         agent=summary_agent
     )
 
-    crew = Crew(agents=[summary_agent], tasks=[summary_task], verbose=False, memory=False)
+    crew = Crew(agents=[summary_agent], tasks=[summary_task], verbose=True, memory=False)
     result = crew.kickoff()
     return str(result).strip()
 

@@ -14,9 +14,10 @@ import inspect
 import asyncio
 from functools import partial
 import logging
+from datetime import datetime
 
-# Setup basic logging
-logging.basicConfig(level=logging.INFO)
+# basic logging setup
+# logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # States
@@ -167,6 +168,170 @@ def extract_field_names_from_insert(sql):
         return []
     field_str = match.group(1)
     return [field.strip() for field in field_str.split(",")]
+
+async def check_for_incomplete_cases(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Query to get latest case_id entries per form table for this user
+    union_queries = []
+    for form_name in form_definitions.keys():
+        union_queries.append(
+            f"""
+            SELECT '{form_name}' as form_name, case_id, MAX(timestamp) as latest_time
+            FROM {form_name}
+            WHERE user = ?
+            GROUP BY case_id
+            """
+        )
+    query = "\nUNION\n".join(union_queries)
+    c.execute(query, (str(user_id),) * len(form_definitions))
+    all_cases = c.fetchall()
+
+    incomplete_cases = {}
+    for form_name, case_id, _ in all_cases:
+        if case_id not in incomplete_cases:
+            incomplete_cases[case_id] = {}
+        incomplete_cases[case_id][form_name] = True
+
+    # Now check for missing fields
+    incomplete_case_ids = []
+    for case_id in incomplete_cases:
+        session_data = {"forms": {}}
+        for form in form_definitions:
+            c.execute(f"SELECT * FROM {form} WHERE user = ? AND case_id = ?", (str(user_id), case_id))
+            rows = c.fetchall()
+            if rows:
+                col_names = [desc[0] for desc in c.description]
+                all_fields = {}
+
+                for row in rows:
+                    row_dict = dict(zip(col_names, row))
+                    for question_key in form_definitions[form]:
+                        col_key = normalize_key(question_key)
+                        val = row_dict.get(col_key)
+                        if col_key not in all_fields and val is not None and str(val).strip():
+                            all_fields[col_key] = str(val)
+
+                session_data["forms"][form] = {
+                    question: all_fields.get(normalize_key(question), "")
+                    for question in form_definitions[form]
+                    if normalize_key(question) in all_fields
+                }
+
+        complete, missing = is_all_form_data_complete(session_data, form_definitions)
+        if not complete:
+            incomplete_case_ids.append(case_id)
+
+    # If any, prompt user to resume or create new
+    if incomplete_case_ids:
+        # Build case metadata with timestamps
+        case_details = []
+        for case_id in incomplete_case_ids:
+            latest_ts = None
+
+            # Loop to find the latest timestamp across forms for the case
+            for form in form_definitions:
+                c.execute(
+                    f"SELECT timestamp FROM {form} WHERE user = ? AND case_id = ? ORDER BY timestamp DESC LIMIT 1",
+                    (str(user_id), case_id)
+                )
+                row = c.fetchone()
+                if row and row[0]:
+                    ts_str = row[0]
+                    if not latest_ts or ts_str > latest_ts:
+                        latest_ts = ts_str
+
+            # Fallback if no timestamp is found
+            if not latest_ts:
+                print(f"[WARN] No timestamp found for case {case_id}, using current time as fallback.")
+                latest_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            dt_obj = datetime.strptime(latest_ts, "%Y-%m-%d %H:%M:%S")
+            case_details.append((case_id, dt_obj))
+
+        # Sort by datetime descending
+        case_details.sort(key=lambda x: x[1], reverse=True)
+        
+        # Build message body instead
+        message_lines = ["📂 You have unfinished cases. Would you like to resume any of them or start a new one?\n"]
+        keyboard = []
+        
+        for idx, (cid, dt) in enumerate(case_details, 1):
+            message_lines.append(
+                f"{idx}. 📝 Case `{cid[:8]}` — 📅 {dt.strftime('%d %b %Y, %I:%M %p')}"
+            )
+            keyboard.append([InlineKeyboardButton(f"Resume Case {cid[:8]}", callback_data=f"resume:{cid}")])
+        
+        # Add final button
+        keyboard.append([InlineKeyboardButton("➕ Start New Case", callback_data="start_new_case")])
+        
+        conn.close()
+
+        await update.message.reply_text(
+            "\n".join(message_lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return SELECTING_FORM
+
+    return await start(update, context)
+
+# 🔧 Fix: Normalize DB column keys to match form definition keys
+def normalize_key(label):
+    return re.sub(r'\W+', '_', label.strip().lower())
+
+async def resume_existing_case(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    case_id = query.data.split(":")[1]
+
+    # Fetch all data into user_session_data
+    session_data = {
+        "forms": {},
+        "current_form": "",
+        "current_question": "",
+        "case_id": case_id
+    }
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    for form in form_definitions:
+        c.execute(f"SELECT * FROM {form} WHERE user = ? AND case_id = ?", (str(user_id), case_id))
+        rows = c.fetchall()
+        if rows:
+            col_names = [desc[0] for desc in c.description]
+            all_fields = {}
+            latest_ts_in_form = None
+
+            for row in rows:
+                row_dict = dict(zip(col_names, row))
+                ts = row_dict.get("timestamp")
+                if ts and (not latest_ts_in_form or ts > latest_ts_in_form):
+                    latest_ts_in_form = ts
+
+                for question_key in form_definitions[form]:
+                    col_key = normalize_key(question_key)
+                    val = row_dict.get(col_key)
+                    if col_key not in all_fields and val is not None and str(val).strip():
+                        all_fields[col_key] = str(val)
+
+            session_data["forms"][form] = {
+                question: all_fields.get(normalize_key(question), "")
+                for question in form_definitions[form]
+                if normalize_key(question) in all_fields
+            }
+
+            # Update latest_ts for the case (for correct sorting)
+            if not latest_ts or latest_ts_in_form > latest_ts:
+                latest_ts = latest_ts_in_form
+    conn.close()
+
+    user_session_data[user_id] = session_data
+    await query.edit_message_text(f"✅ Resumed case {case_id[:8]}. Let's continue.")
+    return await start(update, context, preserve_session=True)
 
 def save_to_db_with_agent(user_id, form, case_id, data, sql_dict):
     sql = sql_dict.get(form)
@@ -437,12 +602,40 @@ async def submit_and_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     session = user_session_data.get(user_id)
 
-    logger.info(f"📨 [User {user_id}] Triggered Submit & Email (no validation or DB).")
+    logger.info(f"📨 [User {user_id}] Triggered Submit & Email.")
 
     if not session:
         logger.warning(f"⚠️ [User {user_id}] No session found.")
         await query.edit_message_text("⚠️ No session found. Please start a new form entry.")
         return ConversationHandler.END
+
+    complete, missing = is_all_form_data_complete(session, form_definitions)
+
+    if not complete:
+        # Group missing fields by form
+        missing_by_form = {}
+        for form, question in missing:
+            missing_by_form.setdefault(form, []).append(question)
+
+        # Build formatted message
+        missing_message = "⚠️ You still have the following unanswered fields:\n"
+        for form_name, questions in missing_by_form.items():
+            readable_form = form_name.replace('_', ' ').title()
+            missing_message += f"\n📄 *{readable_form}*\n"
+            for q in questions:
+                missing_message += f"❌ {q}\n"
+
+        missing_message += "\nWhat would you like to do?"
+
+        # Buttons to resume or skip
+        keyboard = [
+            [InlineKeyboardButton("📝 Continue answering", callback_data="return_to_form_select")],
+            [InlineKeyboardButton("💾 Save and Quit", callback_data="save_quit")]
+        ]
+        await query.edit_message_text(missing_message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return SELECTING_FORM
+
+    logger.info(f"✅ [User {user_id}] All fields complete. Proceeding with email.")
 
     form_responses = session.get("forms", {})
     summary = case_summary_agent(form_responses)
@@ -468,6 +661,7 @@ async def submit_and_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_session_data.pop(user_id, None)
     return ConversationHandler.END
 
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
@@ -482,12 +676,15 @@ def main():
     app = Application.builder().token("7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs").build()
     
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CommandHandler("start", check_for_incomplete_cases)],
         states={
             SELECTING_FORM: [
                 CallbackQueryHandler(select_form, pattern="^form:"),
                 CallbackQueryHandler(save_quit, pattern="^save_quit$"),
-                CallbackQueryHandler(submit_and_email, pattern="^submit_and_email$")
+                CallbackQueryHandler(submit_and_email, pattern="^submit_and_email$"),
+                CallbackQueryHandler(return_to_form_select, pattern="^return_to_form_select$"),
+                CallbackQueryHandler(resume_existing_case, pattern="^resume:"),
+                CallbackQueryHandler(start, pattern="^start_new_case$")
             ],
             SELECTING_QUESTION: [
                 CallbackQueryHandler(select_question, pattern="^question:"),
