@@ -121,7 +121,10 @@ form_definitions = {
 }
 
 intent_dict = {   
-    "insert_into_db": "Insert or update a given form entry for the given user and case_id with the latest field values from the session."
+    "insert_into_db": "Insert or update a given form entry for the given user and case_id with the latest field values from the session.",
+    "get_latest_case_ids_per_form_for_user": "For each form table, select the most recent timestamped entry per case_id for a given user, and return the form name, case_id, and latest timestamp. Group by case_id. Combine results across all tables using UNION.",
+    "get_all_form_data_by_case_id_and_user": "Select all fields from each form table for a given user and case_id. Return all rows where case_id and user match exactly. Include timestamp column for each row.",
+    "get_latest_timestamp_for_case_id_per_form": "For each form table, select the latest timestamp for a given case_id and user. Order by timestamp descending and limit to 1 row per table."
 }
 
 # =================================================================================================
@@ -298,6 +301,8 @@ async def resume_existing_case(update: Update, context: ContextTypes.DEFAULT_TYP
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    latest_ts = None  
+    
     for form in form_definitions:
         c.execute(f"SELECT * FROM {form} WHERE user = ? AND case_id = ?", (str(user_id), case_id))
         rows = c.fetchall()
@@ -383,6 +388,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, preserve_ses
                 for name in form_definitions.keys()]
     keyboard.append([InlineKeyboardButton("💾 Save and Quit", callback_data="save_quit")])
     keyboard.append([InlineKeyboardButton("📩 Submit & Email", callback_data="submit_and_email")])
+    keyboard.append([InlineKeyboardButton("🗑️ Delete a Case", callback_data="delete_case_menu")])
     if update.message:
         await update.message.reply_text("📋 Choose a form to answer:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif update.callback_query:
@@ -580,7 +586,8 @@ async def save_quit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     session = user_session_data.get(user_id)
     if session:
-        case_id = str(uuid.uuid4())
+        case_id = session.get("case_id") or str(uuid.uuid4())
+        session["case_id"] = case_id  # ensure it's stored if newly created
         
     user_prompt = intent_dict["insert_into_db"]
     form_types = {

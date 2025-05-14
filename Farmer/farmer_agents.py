@@ -261,14 +261,14 @@ def dynamic_sql_agent(intent, form_def_type):
     Instructions:
     - Use the known form schemas listed below.
     - Check all form tables listed.
-    - Each query must only return rows where *all fields are non-null and non-empty ('')* UNLESS STATED OTHERWISE
+    - Do not include WHERE clauses that prevent updating when fields are null or empty.
     - Use a parameter placeholder `?` for the `case_id`, not a hardcoded value.
     - The final output should be in json format with all the forms as the key and the sql statements as the value
     - Respond with a single unified input only if specified in the user input
     - Do NOT return explanations, only the SQL queries.
     - Return the output in **JSON format** with keys as table names and values as SQL strings.
     - Use lowercase snake_case field names exactly as defined in the schema (not display labels).
-    - CONFLICT(case_id, user) can be used. DO NOT USE CONFLICT(case_id) or CONFLICT(user).
+    - CONFLICT(case_id, user) can be used. Do not add any WHERE clause to the ON CONFLICT part. Always update the fields regardless of NULL or empty.
 
     --- FORM SCHEMA ---
     {form_def_text}
