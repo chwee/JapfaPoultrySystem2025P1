@@ -122,7 +122,12 @@ form_definitions = {
 
 intent_dict = {   
     "insert_into_db": "Insert or update a given form entry for the given user and case_id with the latest field values from the session.",
-    "get_latest_case_ids_per_form_for_user": "For each form table, select the most recent timestamped entry per case_id for a given user, and return the form name, case_id, and latest timestamp. Group by case_id. Combine results across all tables using UNION.",
+    "get_latest_case_ids_per_form_for_user": (
+        "Generate a single SQL UNION query that selects the form name, case_id, and latest timestamp from each form table. "
+        "Each subquery should select the form name as a constant string. "
+        "Filter by user = ?. Group by case_id. Combine using UNION ALL. "
+        "Return the entire query as one string under the JSON key `unified_output`."
+    ),
     "get_all_form_data_by_case_id_and_user": "Select all fields from each form table for a given user and case_id. Return all rows where case_id and user match exactly. Include timestamp column for each row.",
     "get_latest_timestamp_for_case_id_per_form": "For each form table, select the latest timestamp for a given case_id and user. Order by timestamp descending and limit to 1 row per table."
 }
@@ -178,18 +183,19 @@ async def check_for_incomplete_cases(update: Update, context: ContextTypes.DEFAU
     c = conn.cursor()
 
     # Query to get latest case_id entries per form table for this user
-    union_queries = []
-    for form_name in form_definitions.keys():
-        union_queries.append(
-            f"""
-            SELECT '{form_name}' as form_name, case_id, MAX(timestamp) as latest_time
-            FROM {form_name}
-            WHERE user = ?
-            GROUP BY case_id
-            """
-        )
-    query = "\nUNION\n".join(union_queries)
-    c.execute(query, (str(user_id),) * len(form_definitions))
+    form_types = {
+        form: {q: meta["type"] for q, meta in fields.items()}
+        for form, fields in form_definitions.items()
+    }
+    sql_json = ast.literal_eval(dynamic_sql_agent(intent_dict["get_latest_case_ids_per_form_for_user"], form_types))
+    sql = sql_json.get("unified_output")
+    
+    if not sql:
+        raise ValueError("Expected 'unified_output' from SQL agent, got: " + str(sql_json))
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(sql, (str(user_id),) * len(form_definitions))
     all_cases = c.fetchall()
 
     incomplete_cases = {}
