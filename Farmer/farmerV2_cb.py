@@ -389,7 +389,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, preserve_ses
             "forms": {},
             "current_form": "",
             "current_question": "",
-            "case_id": str(uuid.uuid4())  
+            "case_id": user_session_data.get(user_id, {}).get("case_id", str(uuid.uuid4()))
         }
     else:
         # Ensure case_id is present for resumed sessions
