@@ -388,13 +388,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, preserve_ses
         user_session_data[user_id] = {
             "forms": {},
             "current_form": "",
-            "current_question": ""
+            "current_question": "",
+            "case_id": str(uuid.uuid4())  
         }
+    else:
+        # Ensure case_id is present for resumed sessions
+        user_session_data[user_id].setdefault("case_id", str(uuid.uuid4()))
+        
     keyboard = [[InlineKeyboardButton(name.replace("_", " ").title(), callback_data=f"form:{name}")]
                 for name in form_definitions.keys()]
     keyboard.append([InlineKeyboardButton("💾 Save and Quit", callback_data="save_quit")])
     keyboard.append([InlineKeyboardButton("📩 Submit & Email", callback_data="submit_and_email")])
-    keyboard.append([InlineKeyboardButton("🗑️ Delete a Case", callback_data="delete_case_menu")])
+    keyboard.append([InlineKeyboardButton("🗑️ Delete Case", callback_data="delete_case_menu")])
     if update.message:
         await update.message.reply_text("📋 Choose a form to answer:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif update.callback_query:
@@ -679,6 +684,69 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
+async def delete_case_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    session = user_session_data.get(user_id)
+    if not session or not session.get("case_id"):
+        await query.edit_message_text(
+            "⚠️ No active case found to delete.\n\nReturning to main menu..."
+        )
+        return await start(update, context, preserve_session=True)
+
+    case_id = session["case_id"]
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Yes, delete it", callback_data=f"confirm_delete_case:yes"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"confirm_delete_case:no")
+        ]
+    ]
+    await query.edit_message_text(
+        f"⚠️ Are you sure you want to delete the current case `{case_id[:8]}`? This cannot be undone.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    return SELECTING_FORM
+
+async def confirm_delete_case(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    decision = query.data.split(":")[1]
+
+    if decision == "no":
+        await query.edit_message_text("❎ Deletion cancelled. Returning to main menu.")
+        return await start(update, context, preserve_session=True)
+
+    session = user_session_data.get(user_id)
+    if not session or not session.get("case_id"):
+        await query.edit_message_text("⚠️ No active case found to delete.")
+        return SELECTING_FORM
+
+    case_id = session["case_id"]
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+
+        # Delete from all forms
+        for form in form_definitions:
+            c.execute(f"DELETE FROM {form} WHERE user = ? AND case_id = ?", (str(user_id), case_id))
+        conn.commit()
+        conn.close()
+
+        user_session_data.pop(user_id, None)
+        await query.edit_message_text(f"🗑️ Case `{case_id[:8]}` has been permanently deleted.", parse_mode="Markdown")
+        return ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f"❌ Failed to delete case: {e}", exc_info=True)
+        await query.edit_message_text("⚠️ Failed to delete case due to a system error.")
+        return SELECTING_FORM
+
 def main():
     if not os.path.exists(DB_PATH):
         print("Database not found. Initializing...")
@@ -697,7 +765,9 @@ def main():
                 CallbackQueryHandler(submit_and_email, pattern="^submit_and_email$"),
                 CallbackQueryHandler(return_to_form_select, pattern="^return_to_form_select$"),
                 CallbackQueryHandler(resume_existing_case, pattern="^resume:"),
-                CallbackQueryHandler(start, pattern="^start_new_case$")
+                CallbackQueryHandler(start, pattern="^start_new_case$"),
+                CallbackQueryHandler(delete_case_menu, pattern="^delete_case_menu$"),
+                CallbackQueryHandler(confirm_delete_case, pattern="^confirm_delete_case:(yes|no)$"),
             ],
             SELECTING_QUESTION: [
                 CallbackQueryHandler(select_question, pattern="^question:"),
