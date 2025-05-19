@@ -128,8 +128,8 @@ intent_dict = {
         "Filter by user = ?. Group by case_id. Combine using UNION ALL. "
         "Return the entire query as one string under the JSON key `unified_output`."
     ),
-    "get_all_form_data_by_case_id_and_user": "Select all fields from each form table for a given user and case_id. Return all rows where case_id and user match exactly. Include timestamp column for each row.",
-    "get_latest_timestamp_for_case_id_per_form": "For each form table, select the latest timestamp for a given case_id and user. Order by timestamp descending and limit to 1 row per table."
+    "get_all_form_data_by_case_id_and_user": "Retrieve all saved answers from each form table where both user and case_id match exactly. Include timestamp column if available.",
+    "get_latest_timestamp_for_case_id_per_form": "For each form table, select the latest timestamp for a given case_id and user. Order by timestamp descending and limit to 1 row per table.",
 }
 
 # =================================================================================================
@@ -190,6 +190,10 @@ async def check_for_incomplete_cases(update: Update, context: ContextTypes.DEFAU
     sql_json = ast.literal_eval(dynamic_sql_agent(intent_dict["get_latest_case_ids_per_form_for_user"], form_types))
     sql = sql_json.get("unified_output")
     
+    # Get dynamic SQL for reading data and timestamps
+    sql_dict = ast.literal_eval(dynamic_sql_agent(intent_dict["get_all_form_data_by_case_id_and_user"], form_types))
+    ts_sql_dict = ast.literal_eval(dynamic_sql_agent(intent_dict["get_latest_timestamp_for_case_id_per_form"], form_types))
+    
     if not sql:
         raise ValueError("Expected 'unified_output' from SQL agent, got: " + str(sql_json))
 
@@ -209,7 +213,9 @@ async def check_for_incomplete_cases(update: Update, context: ContextTypes.DEFAU
     for case_id in incomplete_cases:
         session_data = {"forms": {}}
         for form in form_definitions:
-            c.execute(f"SELECT * FROM {form} WHERE user = ? AND case_id = ?", (str(user_id), case_id))
+            sql = sql_dict.get(form)
+            c.execute(sql, (case_id, str(user_id)))
+            
             rows = c.fetchall()
             if rows:
                 col_names = [desc[0] for desc in c.description]
@@ -242,14 +248,16 @@ async def check_for_incomplete_cases(update: Update, context: ContextTypes.DEFAU
 
             # Loop to find the latest timestamp across forms for the case
             for form in form_definitions:
-                c.execute(
-                    f"SELECT timestamp FROM {form} WHERE user = ? AND case_id = ? ORDER BY timestamp DESC LIMIT 1",
-                    (str(user_id), case_id)
-                )
+                ts_sql = ts_sql_dict.get(form)
+                c.execute(ts_sql, (case_id, str(user_id)))
+                        
                 row = c.fetchone()
-                if row and row[0]:
-                    ts_str = row[0]
-                    if not latest_ts or ts_str > latest_ts:
+                if row:
+                    col_names = [desc[0] for desc in c.description]
+                    row_dict = dict(zip(col_names, row))
+                    ts_str = row_dict.get("timestamp")
+                    
+                    if ts_str:
                         latest_ts = ts_str
 
             # Fallback if no timestamp is found
@@ -310,7 +318,14 @@ async def resume_existing_case(update: Update, context: ContextTypes.DEFAULT_TYP
     latest_ts = None  
     
     for form in form_definitions:
-        c.execute(f"SELECT * FROM {form} WHERE user = ? AND case_id = ?", (str(user_id), case_id))
+        form_types = {
+            form: {q: meta["type"] for q, meta in fields.items()}
+            for form, fields in form_definitions.items()
+        }
+        sql_dict = ast.literal_eval(dynamic_sql_agent(intent_dict["get_all_form_data_by_case_id_and_user"], form_types))
+        sql = sql_dict.get(form)
+        c.execute(sql, (str(user_id), case_id))
+        
         rows = c.fetchall()
         if rows:
             col_names = [desc[0] for desc in c.description]

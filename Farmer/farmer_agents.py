@@ -19,6 +19,7 @@ from email.mime.text import MIMEText
 # Load API key from .env
 load_dotenv()
 os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+# st.environ["OPENAI_API_KEY"] = st.getenv("OPENAI_API_KEY")
 # os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
 
 EMAIL_PASSKEY = os.getenv("EMAIL_PASSKEY")
