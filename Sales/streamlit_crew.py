@@ -105,7 +105,8 @@ You are an SQL generation agent. Your job is to generate **parameterized SQL** s
 Instructions:
 - Use the known form schemas listed below.
 - Check all tables listed.
-- Replace placeholders with provided values (e.g., case_id = 123).
+- The case_id provided is a partial UUID (first 8 characters only), so write queries using: case_id LIKE ? and ensure the placeholder ? will be replaced with '<value>%'.
+- Replace placeholders with provided values.
 - ALWAYS fetch the farm_name in the issues table.
 - Do NOT return explanations, only the SQL queries.
 - Return the output in **JSON format** with keys as table names and values as SQL strings.
@@ -154,9 +155,7 @@ Final Output Format (**EXAMPLE**):
         try:
             # If you have a case_id parameter to inject, replace placeholder in query
             if case_id is not None:
-                # Assuming your queries use a placeholder like $1 or similar for case_id
-                # Supabase RPC expects the full query as text, so interpolate carefully
-                formatted_query = query.replace("?", f"'{case_id}'")  # Be careful with SQL injection here!
+                formatted_query = query.replace("?", f"'%{case_id}%'")
             else:
                 formatted_query = query
 

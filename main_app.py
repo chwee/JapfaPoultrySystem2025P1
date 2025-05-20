@@ -11,9 +11,9 @@ from Sales.streamlit_crew import (
 
 schema = """
 Tables:
-- flock_farm_information(id, case_id, type_of_chicken, age_of_chicken, housing_type, number_of_affected_flocks, feed_type, environment_information, timestamp)
+- flock_farm_information(id, case_id, type_of_chicken, age_of_chicken, housing_type, number_of_affected_flocks_houses, timestamp)
 - symptoms_performance_data(id, case_id, main_symptoms, daily_production_performance, pattern_of_spread_or_drop, timestamp)
-- medical_diagnostic_records(id, case_id, vaccination_history, lab_data, pathology_findings_necropsy, current_treatment, management_questions, timestamp)
+- medical_diagnostic_records(id, case_id, vaccination_history, lab_data, pathology_findings_necropsy, current_treatment, timestamp)
 - issues(id, title, description, farm_name, status, close_reason, assigned_team, case_id, created_at, updated_at)
 - farmer_problem(id, case_id, problem_description, timestamp)
 - notifications(id, recipient_team, message, sent_at)
@@ -40,8 +40,11 @@ if main_action == "Generate Report":
         prompt = st.text_area("Enter your prompt here:")
         if st.button("Generate Report"):
             if prompt:
-                case_match = re.search(r"\bcase(?:[\s_]*id)?[:\s#]*?(\d+)\b", prompt, re.IGNORECASE)
-                case_id = int(case_match.group(1)) if case_match else None
+                case_match = re.search(r"\bcase(?:[\s_]*id)?[:\s#]*?([0-9a-fA-F]{8})\b", prompt, re.IGNORECASE)
+                case_id = case_match.group(1) if case_match else None
+
+                if case_id and len(case_id) != 8:
+                    st.warning("Detected case ID is not exactly 8 characters. Please provide the first 8 characters of the case UUID.")
 
                 with st.spinner("Generating report..."):
                     execution_result = generate_and_execute_sql(
@@ -66,7 +69,7 @@ if main_action == "Generate Report":
 
         case_id_input = None
         if standard_option in ["Generate Individual Case Summary", "Generate Full Case Report"]:
-            case_id_input = st.number_input("Enter Case ID", min_value=1, step=1)
+            case_id_input = st.text_input("Enter Case ID")
 
         if standard_option == "Generate Individual Case Summary":
             if st.button("Generate Summary"):

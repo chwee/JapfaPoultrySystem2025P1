@@ -204,9 +204,8 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
 
     if user_id not in user_state:
-        # Try to extract case_id (e.g., "case 12", "case_id=12", "for case: 12")
-        case_match = re.search(r"(?:case[_\s]*id)?[^\d]*(\d+)", user_input, re.IGNORECASE)
-        case_id = int(case_match.group(1)) if case_match else None
+        case_match = re.search(r"\bcase(?:[\s_]*id)?[:\s#]*?([0-9a-fA-F]{8})\b", user_input, re.IGNORECASE)
+        case_id = case_match.group(1) if case_match else None
 
         await update.message.reply_text("🔍 Processing your request...")
 
@@ -237,8 +236,8 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Handle action based on user state
     if state["action"] == "closing_case":
         if state["step"] == "awaiting_case_id":
-            if not user_input.isdigit():
-                await update.message.reply_text("❗ Please enter a valid numeric Case ID.")
+            if not re.fullmatch(r"[0-9a-fA-F]{8}", user_input):
+                await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
                 return
 
             if not check_case_exists(user_input):
@@ -262,8 +261,8 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state["action"] == "escalating_case":
         if state["step"] == "awaiting_case_id":
-            if not user_input.isdigit():
-                await update.message.reply_text("❗ Please enter a valid numeric Case ID.")
+            if not re.fullmatch(r"[0-9a-fA-F]{8}", user_input):
+                await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
                 return
 
             if not check_case_exists(user_input):
@@ -292,16 +291,26 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state["action"] == "case_summary":
         # Handle case summary generation
+        case_id = user_input.strip()
+
+        if not re.fullmatch(r"[0-9a-fA-F]{8}", case_id):
+            await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
+            return
+        
         await update.message.reply_text("⏳ Generating case summary...")
-        case_id = int(user_input)
         result = generate_individual_case_summary(case_id)
         await update.message.reply_text(f"<pre>{result}</pre>", parse_mode="HTML")
         await show_main_menu(update)
 
     elif state["action"] == "generate_report":
         # Handle full report generation
+        case_id = user_input.strip()
+
+        if not re.fullmatch(r"[0-9a-fA-F]{8}", case_id):
+            await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
+            return
+        
         await update.message.reply_text("⏳ Generating full report...")
-        case_id = int(user_input)
         result = generate_report_for_forms(case_id)
         await update.message.reply_text(f"<pre>{result}</pre>", parse_mode="HTML")
         await show_main_menu(update)
