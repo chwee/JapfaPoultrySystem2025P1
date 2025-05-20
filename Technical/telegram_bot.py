@@ -8,8 +8,8 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
-from crew import run_upload_analysis
-from Sales.test_free_text_in_telegram import (
+from technical_crew import run_upload_analysis
+from Sales.sales_crew import (
     execute_case_closing,
     check_case_exists,
     generate_individual_case_summary,
@@ -61,9 +61,17 @@ async def show_main_menu(update: Update):
         reply_markup=get_main_menu_buttons()
     )
 
+# /start and /cancel command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update)
 
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_state.pop(user_id, None)  # Clear the user's state
+    await update.message.reply_text("❌ Action cancelled. Returning to the main menu.")
+    await show_main_menu(update)
+
+# Button interactions
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -200,12 +208,10 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
 
     try:
         raw_output = run_upload_analysis(user_data["case_id"], file_path)
-        print("DEBUG: Raw analysis result:", raw_output)
 
         # Check if json_dict exists
         if raw_output.json_dict:
             analysis_result = raw_output.json_dict
-            print(f"DEBUG: Analysis result (json_dict): {analysis_result}")
 
             # Access the fields
             is_relevant = analysis_result.get("is_relevant", False)
@@ -231,7 +237,6 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
                 await update.message.reply_text(f"❌ Case closure failed: {e}")
 
         else:
-            print("DEBUG: json_dict is not available in raw_output.")
             # Fallback: Check if raw_output contains a valid JSON string
             raw_data = raw_output.raw
             print(f"DEBUG: Raw data for analysis: {raw_data}")
@@ -278,6 +283,7 @@ def run_telegram_bot():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, case_id_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document_upload))

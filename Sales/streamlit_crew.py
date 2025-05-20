@@ -1,43 +1,38 @@
 import os
-import sqlite3
 import json
 import re
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew
 from crewai.tools import BaseTool
+from pydantic import PrivateAttr
+from supabase import create_client, Client
 
 # Load .env variables
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 llm = ChatOpenAI(model_name="gpt-4o")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 os.environ["CREWAI_TELEMETRY_DISABLED"] = "1"
 
 class SQLiteTool(BaseTool):
     name: str = "SQLiteTool"
     description: str = "Run SQL queries against the poultry database."
-    db_path: str
+    _client: Client = PrivateAttr()
 
-    def __init__(self, db_path: str):
-        super().__init__(db_path=db_path)
-        self.db_path = db_path
+    def __init__(self, supabase_url: str, supabase_key: str, **data):
+        super().__init__(**data)
+        self._client: Client = create_client(supabase_url, supabase_key)
 
     def _run(self, query: str) -> str:
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(query)
-                if query.strip().lower().startswith("select"):
-                    rows = cursor.fetchall()
-                    if not rows:
-                        return "No results found."
-                    return "\n".join([str(row) for row in rows])  # Return results as formatted string
-                else:
-                    conn.commit()
-                    return "Query executed successfully."
-        except Exception as e:
-            return f"Error running query: {e}"
+            try:
+                result = self._client.rpc("run_sql", {"query": query}).execute()
+                return result.data if result.data else "No results found."
+            except Exception as e:
+                return f"Error running query: {e}"
 
     async def _arun(self, query: str) -> str:
         return self._run(query)
@@ -53,7 +48,7 @@ Tables:
 - issue_attachments(id, case_id, file_name, file_path, uploaded_at)
 """
 
-sqlite_tool = SQLiteTool(db_path="poultry_data.db")
+sqlite_tool = SQLiteTool(SUPABASE_URL, SUPABASE_KEY)
 
 # AGENTS
 sql_agent = Agent(
@@ -83,7 +78,7 @@ report_generation_agent = Agent(
 )
 
 # TASKS
-def generate_and_execute_sql(schema: str, db_path: str = "poultry_data.db", action_type: str = None, case_id: int = None, 
+def generate_and_execute_sql(schema: str, action_type: str = None, case_id: int = None, 
                              user_input:str = None, file_path:str = None, file_name:str = None) -> dict:
     if user_input is None:
         # Create the SQL generation prompt
@@ -111,6 +106,7 @@ Instructions:
 - Use the known form schemas listed below.
 - Check all tables listed.
 - Replace placeholders with provided values (e.g., case_id = 123).
+- ALWAYS fetch the farm_name in the issues table.
 - Do NOT return explanations, only the SQL queries.
 - Return the output in **JSON format** with keys as table names and values as SQL strings.
 - Use lowercase snake_case field names exactly as defined in the schema (not display labels).
@@ -153,34 +149,44 @@ Final Output Format (**EXAMPLE**):
 
     # Execute queries
     execution_results = {}
+
     for table, query in sql_queries.items():
         try:
-            with sqlite3.connect(db_path) as conn:
-                cursor = conn.cursor()
-                if case_id is not None:
-                    cursor.execute(query, (case_id,))
-                else:
-                    cursor.execute(query)
-                rows = cursor.fetchall()
-                execution_results[table] = [dict(zip([col[0] for col in cursor.description], row)) for row in rows]
+            # If you have a case_id parameter to inject, replace placeholder in query
+            if case_id is not None:
+                # Assuming your queries use a placeholder like $1 or similar for case_id
+                # Supabase RPC expects the full query as text, so interpolate carefully
+                formatted_query = query.replace("?", f"'{case_id}'")  # Be careful with SQL injection here!
+            else:
+                formatted_query = query
+
+            # Call the run_sql RPC function with the formatted query
+            response = supabase_client.rpc("run_sql", {"query": formatted_query}).execute()
+
+            # Extract data from response
+            if response.data:
+                execution_results[table] = response.data  # Already a list of dicts (json_agg)
+            else:
+                execution_results[table] = []
+
         except Exception as e:
             execution_results[table] = f"Error executing query: {e}"
 
     return execution_results
 
-def generate_report_from_prompt(execution_results):
+def generate_report_from_prompt(execution_results, case_id):
     report_prompt = f"""
-    Below is the raw SQL query result data from multiple forms related to a poultry case.
-
     Your task is to write a professional, human-readable report summarizing the key findings from the data.
 
     Instructions:
+    - ALWAYS include the farm name and case ID in the report.
     - Organize the report clearly by form/table.
     - Use complete sentences and avoid overly technical language.
     - Summarize observations, issues, and any notable entries.
     - Do not include raw SQL or technical field names.
 
     Raw Data:
+    Case ID: {case_id}
     {json.dumps(execution_results, indent=2)}
     """
 
@@ -199,6 +205,9 @@ def generate_individual_case_summary(case_id):
     You have been given the following results from SQL queries on case_id {case_id}. Your task is to generate a high-level summary of the following forms.
 
     --- SQL RESULTS ---
+    Farmm Name:
+    {farm_name}
+
     Flock Farm Information Form Results:
     {flock_farm_information_results}
 
@@ -210,6 +219,7 @@ def generate_individual_case_summary(case_id):
 
     Format the output as follows:
     "Case #{case_id}:\n\n"
+    "Farm Name: <farm_name>\n"
     "Flock Farm Information: <short summary>\n"
     "Symptoms Performance: <short summary>\n"
     "Medical Diagnostic Records: <short summary>\n"
@@ -220,6 +230,7 @@ def generate_individual_case_summary(case_id):
     # Generate the formatted report using the results from the SQL execution
     case_summary_task_description_filled = case_summary_task_description.format(
         case_id=case_id,
+        farm_name=execution_results_for_case_summary.get('issues', 'No data available.'),
         flock_farm_information_results=execution_results_for_case_summary.get('flock_farm_information', 'No data available.'),
         symptoms_performance_data_results=execution_results_for_case_summary.get('symptoms_performance_data', 'No data available.'),
         medical_diagnostic_records_results=execution_results_for_case_summary.get('medical_diagnostic_records', 'No data available.')
@@ -245,6 +256,12 @@ def generate_report_for_forms(case_id):
     You have been given the following results from SQL queries on case_id {case_id}. Your task is to generate a comprehensive report including the data from the forms.
 
     --- SQL RESULTS ---
+    Farm Name:
+    {farm_name}
+
+    Status of the case:
+    {status}
+
    Flock Farm Information Form Results:
     {flock_farm_information_results}
 
@@ -258,6 +275,9 @@ def generate_report_for_forms(case_id):
     {farmer_problem_results}
 
     Format the output as follows:
+    "Farm Name: <farm_name>\n"
+    "Status: <status>\n"
+
     Flock Farm Information for Case #{case_id}:
     - Field Name 1 — Value 1
     - Field Name 2 — Value 2
@@ -282,6 +302,8 @@ def generate_report_for_forms(case_id):
     # Generate the formatted report using the results from the SQL execution
     report_task_description_filled = report_task_description.format(
         case_id=case_id,
+        farm_name=execution_results_for_full_report.get('issues', 'No data available.'),
+        status=execution_results_for_full_report.get('issues', 'No data available.'),
         flock_farm_information_results=execution_results_for_full_report.get('flock_farm_information', 'No data available.'),
         symptoms_performance_data_results=execution_results_for_full_report.get('symptoms_performance_data', 'No data available.'),
         medical_diagnostic_records_results=execution_results_for_full_report.get('medical_diagnostic_records', 'No data available.'),
@@ -310,13 +332,19 @@ def generate_summary_of_all_issues():
 
     # Calculate totals
     total_cases = len(issues_results)
-    open_cases = sum(1 for issue in issues_results if issue.get('status') == 'open')
-    closed_cases = total_cases - open_cases
+    open_cases = sum(
+    1 for issue in issues_results
+    if (issue.get('status') or '').strip().lower() == 'open'
+    )
+    closed_cases = sum(
+    1 for issue in issues_results
+    if (issue.get('status') or '').strip().lower() == 'closed'
+    )
     farm_summary = {}
 
     for issue in issues_results:
         farm_name = issue.get('farm_name', 'Unknown')
-        status = issue.get('status', 'open')
+        status = issue.get('status', 'open').strip().lower()
 
         if farm_name not in farm_summary:
             farm_summary[farm_name] = {"total": 0, "open": 0, "closed": 0, "needs_tech_help": 0}
@@ -328,39 +356,35 @@ def generate_summary_of_all_issues():
             farm_summary[farm_name]["closed"] += 1
 
         # Example: Check if 'Needs Tech Help' based on certain criteria (could be modified)
-        if 'tech' in issue.get('assigned_team', '').lower():
+        if 'tech' in (issue.get('assigned_team') or '').lower():
             farm_summary[farm_name]["needs_tech_help"] += 1
 
-    # Format summary
-    case_summary_by_farm = "\n".join(
-        [f"{farm_name:<20} {summary['total']:>5} {summary['open']:>5} {summary['closed']:>5} {summary['needs_tech_help']:>15}" for farm_name, summary in farm_summary.items()]
-    )
+    # Build Markdown table
+    table_header = "| Farm Name | Total | Open | Closed | Needs Tech Help |\n"
+    table_divider = "|-----------|-------|------|--------|-----------------|\n"
+    table_rows = "".join([
+        f"| {farm_name} | {summary['total']} | {summary['open']} | {summary['closed']} | {summary['needs_tech_help']} |\n"
+        for farm_name, summary in farm_summary.items()
+    ])
 
-    # Prepare task description for summary
-    summary_task_description = """
-    You have been given the following results from SQL queries. Your task is to generate a comprehensive overview of all the issues in the database, using the format below.
+    # Full Markdown-formatted summary
+    summary_task_description = f"""
+    ### Issues Summary
 
-    --- SQL RESULTS ---
-    Issues Results:
-    {issues_results}
+    - **Total Cases:** {total_cases}  
+        - **Open Cases:** {open_cases}  
+        - **Closed Cases:** {closed_cases}  
 
-    Format the output as follows:
-    "Issues Summary:\n"
-    "- Total Cases: {total_cases}"
-    "  - Open Cases: {open_cases}"
-    "  - Closed Cases: {closed_cases}\n"
-    "\nCase Summary by Farm:\n"
-    "Farm Name            Total  Open   Closed   Needs Tech Help\n"
-    "------------------------------------------------------------\n"
-    {case_summary_by_farm}
+    ### Case Summary by Farm
+
+    {table_header}{table_divider}{table_rows}
     """
 
     summary_task_description_filled = summary_task_description.format(
         issues_results=issues_results,
         total_cases=total_cases,
         open_cases=open_cases,
-        closed_cases=closed_cases,
-        case_summary_by_farm=case_summary_by_farm
+        closed_cases=closed_cases
     )
 
     # Create task to generate summary
@@ -382,18 +406,10 @@ def generate_summary_of_all_issues():
 # Task for Status Update
 def check_case_exists(case_id: str) -> bool:
     try:
-        # Connect to the SQLite database
-        conn = sqlite3.connect("poultry_data.db")  # Make sure to adjust the path if necessary
-        cursor = conn.cursor()
-        
         # Check if the case_id exists in your case-related table (assuming 'issues' table here)
-        cursor.execute("SELECT COUNT(*) FROM issues WHERE case_id = ?", (case_id,))
-        result = cursor.fetchone()
-        
-        conn.close()
-        
-        # Return True if the case_id exists, otherwise False
-        return result[0] > 0
+        response = supabase_client.table("issues").select("id", count="exact").eq("case_id", case_id).execute()
+        return response.count > 0
+    
     except Exception as e:
         print(f"Error checking case ID in DB: {e}")
         return False

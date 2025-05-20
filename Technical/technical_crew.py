@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew
-from Sales.test_free_text_in_telegram import generate_and_execute_sql
+from Sales.streamlit_crew import generate_and_execute_sql
 
 # === CONFIGURATION ===
 UPLOAD_DIR = "uploads"

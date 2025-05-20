@@ -5,11 +5,12 @@ import smtplib
 from email.message import EmailMessage
 from langchain_openai import ChatOpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from supabase import create_client
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
-from test_free_text_in_telegram import (
+from sales_crew import (
     execute_case_closing,
     check_case_exists,
     generate_individual_case_summary,
@@ -17,7 +18,8 @@ from test_free_text_in_telegram import (
     generate_summary_of_all_issues,
     generate_and_execute_sql,
     generate_report_from_prompt,
-    execute_case_escalation
+    execute_case_escalation,
+    generate_case_summary_for_email
 )
 
 # Setup logging
@@ -39,13 +41,16 @@ Tables:
 
 TELEGRAM_BOT_TOKEN = "7020100788:AAHwAgmmocZHULAdthkhzI7vMxbks3G8NVs"
 EMAIL_PASSKEY = os.getenv("EMAIL_PASSKEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
 user_state = {}
     
 def send_escalation_email(case_id: str, reason: str, case_info: str):
     try:
         msg = EmailMessage()
         msg["Subject"] = f"🚨 Escalation Notice: Case #{case_id}"
-        msg["From"] = "2006limjy@gmail.com"
+        msg["From"] = "japfanotifier@gmail.com"
         msg["To"] = "2006limjy@gmail.com"
 
         msg.set_content(f"""
@@ -101,7 +106,7 @@ Please review and follow up promptly, thank you.
             <body>
                 <div class="container">
                     <h1 style="margin-bottom: 10px; text-align:center">Technical Escalation Notice</h1>
-                    <p><strong>Case ID:</strong> #{case_id}</p>
+                    <p><strong>Case ID:</strong>{case_id}</p>
                     <div class="section-title">Reason for Escalation:</div>
                     <div class="info-box">{reason}</div>
 
@@ -121,7 +126,7 @@ Please review and follow up promptly, thank you.
 
         # Send email
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login("2006limjy@gmail.com", EMAIL_PASSKEY)
+            smtp.login("japfanotifier@gmail.com", EMAIL_PASSKEY)
             smtp.send_message(msg)
 
         return True
@@ -151,8 +156,14 @@ async def show_main_menu(update: Update):
         reply_markup=get_main_menu_buttons()
     )
 
-# /start command
+# /start and /cancel command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_main_menu(update)
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_state.pop(user_id, None)  # Clear the user's state
+    await update.message.reply_text("❌ Action cancelled. Returning to the main menu.")
     await show_main_menu(update)
 
 # Button interactions
@@ -201,7 +212,7 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             result = generate_and_execute_sql(schema=schema, user_input=user_input, case_id=case_id)
-            report =  generate_report_from_prompt(result)
+            report =  generate_report_from_prompt(result, case_id=case_id)
 
             if not result:
                 await update.message.reply_text("⚠️ No data found or unable to generate query.")
@@ -225,38 +236,29 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle action based on user state
     if state["action"] == "closing_case":
-            if state["step"] == "awaiting_case_id":
-                if not user_input.isdigit():
-                    await update.message.reply_text("❗ Please enter a valid numeric Case ID.")
-                    return
+        if state["step"] == "awaiting_case_id":
+            if not user_input.isdigit():
+                await update.message.reply_text("❗ Please enter a valid numeric Case ID.")
+                return
 
-                if not check_case_exists(user_input):
-                    await update.message.reply_text(f"❌ Case ID {user_input} does not exist, please try again.")
-                    return
+            if not check_case_exists(user_input):
+                await update.message.reply_text(f"❌ Case ID {user_input} does not exist, please try again.")
+                return
 
-                state["case_id"] = user_input
-                state["step"] = "awaiting_reason"
-                await update.message.reply_text(f"📝 Please provide a reason for closing the case {user_input}:")
+            state["case_id"] = user_input
+            state["step"] = "awaiting_reason"
+            await update.message.reply_text(f"📝 Please provide a reason for closing the case {user_input}:")
 
-            elif state["step"] == "awaiting_reason":
-                state["reason"] = user_input
-                state["step"] = "waiting_for_upload_or_skip"
-                await update.message.reply_text(
-                    "📤 Upload a document to support your case (optional), or type 'skip' to proceed without a document."
-                )
-
-            elif state["step"] == "waiting_for_upload_or_skip":
-                if user_input.strip().lower() == "skip":
-                    reason = state.get("reason", "No reason provided.")
-                    try:
-                        result = execute_case_closing(state["case_id"], reason)
-                        await update.message.reply_text(f"✅ Case closed successfully: {result}")
-                    except Exception as e:
-                        await update.message.reply_text(f"❌ Case closure failed: {e}")
-                    user_state.pop(user_id, None)
-                    await show_main_menu(update)
-                else:
-                    await update.message.reply_text("❗ Please upload a document or type 'skip' to proceed without one.")
+        elif state["step"] == "awaiting_reason":
+            state["reason"] = user_input
+            reason = state.get("reason", "No reason provided.")
+            try:
+                result = execute_case_closing(state["case_id"], reason)
+                await update.message.reply_text(f"✅ Case closed successfully: {result}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Case closure failed: {e}")
+            user_state.pop(user_id, None)
+            await show_main_menu(update)
 
     elif state["action"] == "escalating_case":
         if state["step"] == "awaiting_case_id":
@@ -276,7 +278,7 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reason = user_input
             case_id = state["case_id"]
 
-            case_info = generate_individual_case_summary(case_id)
+            case_info = generate_case_summary_for_email(case_id)
             success = send_escalation_email(case_id, reason, case_info)
 
             if success:
@@ -317,6 +319,7 @@ def run_telegram_bot():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, case_id_handler))
     app.add_error_handler(error)
