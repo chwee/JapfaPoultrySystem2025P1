@@ -142,8 +142,16 @@ intent_dict = {
 # DB SETUP
 DB_PATH = "../JAPFASNOWFLAKE.db"
 
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
 # In-memory session data
 user_session_data = {}
+
+logging.basicConfig(
+    filename='logs/bot.log',
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s - %(message)s'
+)
 
 # DB Setup
 def init_db(form_definitions_types):

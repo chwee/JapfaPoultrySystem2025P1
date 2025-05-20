@@ -1,0 +1,24 @@
+[2025-05-20 16:20:10,660] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/getMe "HTTP/1.1 200 OK"
+[2025-05-20 16:20:10,835] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/deleteWebhook "HTTP/1.1 200 OK"
+[2025-05-20 16:20:10,835] INFO - Application started
+[2025-05-20 16:20:21,497] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/getUpdates "HTTP/1.1 200 OK"
+[2025-05-20 16:20:27,752] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/getUpdates "HTTP/1.1 200 OK"
+[2025-05-20 16:20:28,593] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/sendMessage "HTTP/1.1 200 OK"
+[2025-05-20 16:20:29,622] INFO - 
+LiteLLM completion() model= gpt-4o; provider = openai
+[2025-05-20 16:20:31,935] INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+[2025-05-20 16:20:31,955] INFO - Wrapper: Completed Call, calling success_handler
+[2025-05-20 16:20:32,924] INFO - 
+LiteLLM completion() model= gpt-4o; provider = openai
+[2025-05-20 16:20:34,545] INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+[2025-05-20 16:20:34,554] INFO - Wrapper: Completed Call, calling success_handler
+[2025-05-20 16:20:35,528] INFO - 
+LiteLLM completion() model= gpt-4o; provider = openai
+[2025-05-20 16:20:38,855] INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+[2025-05-20 16:20:38,864] INFO - Wrapper: Completed Call, calling success_handler
+[2025-05-20 16:20:38,895] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/getUpdates "HTTP/1.1 200 OK"
+[2025-05-20 16:20:39,636] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/sendMessage "HTTP/1.1 200 OK"
+[2025-05-20 16:20:49,105] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/getUpdates "HTTP/1.1 200 OK"
+[2025-05-20 16:20:59,308] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/getUpdates "HTTP/1.1 200 OK"
+[2025-05-20 16:21:09,554] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/getUpdates "HTTP/1.1 200 OK"
+[2025-05-20 16:21:19,782] INFO - HTTP Request: POST https://api.telegram.org/bot7685786328:AAEilDDS65J7-GB43i1LlaCJWJ3bx3i7nWs/getUpdates "HTTP/1.1 200 OK"
