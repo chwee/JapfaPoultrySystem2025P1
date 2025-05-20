@@ -129,7 +129,7 @@ intent_dict = {
         "Return the entire query as one string under the JSON key `unified_output`."
     ),
     "get_all_form_data_by_case_id_and_user": "Retrieve all saved answers from each form table where both user and case_id match exactly. Include timestamp column if available.",
-    "get_latest_timestamp_for_case_id_per_form": "For each form table, select the latest timestamp for a given case_id and user. Order by timestamp descending and limit to 1 row per table.",
+    "get_latest_timestamp_for_case_id_per_form": "For each form table, select the latest timestamp for 2 parameters which are a given case_id and a given user_id. Order by timestamp descending and limit to 1 row per table.",
     "delete_case_by_user_and_case_id": (
         "For each form table, generate a SQL statement to delete all entries belonging to a given user and case ID. "
         "Use parameter placeholders for user and case_id. "
@@ -514,8 +514,25 @@ async def select_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     question = query.data.split(":")[1]
     user_session_data[user_id]["current_question"] = question
     form = user_session_data[user_id]["current_form"]
-    await query.edit_message_text(form_definitions[form][question]["question"])
+    
+    # Message text: the actual question + instruction
+    question_text = form_definitions[form][question]["question"] + "\n\n✍️ Please type your answer below."
+
+    # Inline keyboard for cancel
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Return to Question Menu", callback_data="return_to_question_menu")]
+    ])
+
+    # Send question with inline cancel button
+    await query.edit_message_text(question_text, reply_markup=keyboard)
+    
     return ENTERING_ANSWER
+
+async def return_to_question_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    return await show_question_menu(query, user_id)
 
 async def enter_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -863,7 +880,8 @@ def main():
                 CallbackQueryHandler(return_to_form_select, pattern="^return_to_form_select$")
             ],
             ENTERING_ANSWER: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_answer)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_answer),
+                CallbackQueryHandler(return_to_question_menu, pattern="^return_to_question_menu$"),
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel)]
