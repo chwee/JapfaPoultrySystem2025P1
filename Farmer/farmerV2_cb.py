@@ -121,7 +121,7 @@ form_definitions = {
 }
 
 intent_dict = {   
-    "insert_into_db": "Insert or update a given form entry for the given user and case_id with the latest field values from the session.",
+    "insert_into_db": "Insert or update each form with all available fields. Always refresh the timestamp on update.",
     "get_latest_case_ids_per_form_for_user": (
         "Generate a single SQL UNION query that selects the form name, case_id, and latest timestamp from each form table. "
         "Each subquery should select the form name as a constant string. "
@@ -130,6 +130,11 @@ intent_dict = {
     ),
     "get_all_form_data_by_case_id_and_user": "Retrieve all saved answers from each form table where both user and case_id match exactly. Include timestamp column if available.",
     "get_latest_timestamp_for_case_id_per_form": "For each form table, select the latest timestamp for a given case_id and user. Order by timestamp descending and limit to 1 row per table.",
+    "delete_case_by_user_and_case_id": (
+        "For each form table, generate a SQL statement to delete all entries belonging to a given user and case ID. "
+        "Use parameter placeholders for user and case_id. "
+        "Return the statements as a JSON object with table names as keys and the SQL as values."
+    ),
 }
 
 # =================================================================================================
@@ -178,6 +183,7 @@ def extract_field_names_from_insert(sql):
     return [field.strip() for field in field_str.split(",")]
 
 async def check_for_incomplete_cases(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Starting Up Chat Bot. Please wait...")
     user_id = update.effective_user.id
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -302,6 +308,7 @@ def normalize_key(label):
 async def resume_existing_case(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    await query.edit_message_text("⏳ Resuming your case. Please wait...")
     user_id = query.from_user.id
     case_id = query.data.split(":")[1]
 
@@ -324,7 +331,7 @@ async def resume_existing_case(update: Update, context: ContextTypes.DEFAULT_TYP
         }
         sql_dict = ast.literal_eval(dynamic_sql_agent(intent_dict["get_all_form_data_by_case_id_and_user"], form_types))
         sql = sql_dict.get(form)
-        c.execute(sql, (str(user_id), case_id))
+        c.execute(sql, (case_id, str(user_id)))
         
         rows = c.fetchall()
         if rows:
@@ -380,9 +387,20 @@ def save_to_db_with_agent(user_id, form, case_id, data, sql_dict):
             "user": str(user_id),
             **normalized_data
         }
+        
+        # Force timestamp update if used in SQL
+        if "timestamp" in field_names:
+            value_map["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Final value list in correct order
-        values = [value_map.get(field, None) for field in field_names]
+        # Only exclude timestamp if it's hardcoded in SQL
+        exclude_ts = "CURRENT_TIMESTAMP" in sql.upper()
+        
+        if exclude_ts:
+            fields_without_timestamp = [f for f in field_names if f != "timestamp"]
+        else:
+            fields_without_timestamp = field_names  # Include timestamp as a value
+        
+        values = [value_map.get(field, None) for field in fields_without_timestamp]
 
         print("FINAL SQL:", sql)
         print("VALUES:", values)
@@ -410,15 +428,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, preserve_ses
         # Ensure case_id is present for resumed sessions
         user_session_data[user_id].setdefault("case_id", str(uuid.uuid4()))
         
+    session = user_session_data[user_id]
+    forms_data = session.get("forms", {})
+
+    total_forms = len(form_definitions)
+    completed_forms = 0
+    form_status_lines = []
+
+    for form_name, questions in form_definitions.items():
+        answered = forms_data.get(form_name, {})
+        total_q = len(questions)
+        answered_q = sum(1 for q in questions if answered.get(q) and str(answered[q]).strip())
+        if answered_q == total_q:
+            completed_forms += 1
+        form_status_lines.append(f"📄 {form_name.replace('_', ' ').title()}: {answered_q}/{total_q} answered")
+
+    all_done = completed_forms == total_forms
+    header = f"📋 You have completed {completed_forms}/{total_forms} forms."
+    if all_done:
+        header += "\n✅ All forms completed! Ready to submit."
+        
     keyboard = [[InlineKeyboardButton(name.replace("_", " ").title(), callback_data=f"form:{name}")]
                 for name in form_definitions.keys()]
     keyboard.append([InlineKeyboardButton("💾 Save and Quit", callback_data="save_quit")])
     keyboard.append([InlineKeyboardButton("📩 Submit & Email", callback_data="submit_and_email")])
     keyboard.append([InlineKeyboardButton("🗑️ Delete Case", callback_data="delete_case_menu")])
+    
+    message = f"{header}\n\n" + "\n".join(form_status_lines)
+        
     if update.message:
-        await update.message.reply_text("📋 Choose a form to answer:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
     elif update.callback_query:
-        await update.callback_query.message.reply_text("📋 Choose a form to answer:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.callback_query.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
     return SELECTING_FORM
 
 # Form selection
@@ -445,7 +486,8 @@ async def show_question_menu(query, user_id):
     answered = user_session_data[user_id]["forms"].get(form, {})
     keyboard = []
     for q in form_definitions[form]:
-        status = "✅" if q in answered else "❌"
+        val = answered.get(q, "")
+        status = "✅" if val and str(val).strip() else "❌"
         keyboard.append([InlineKeyboardButton(f"{status} {q}", callback_data=f"question:{q}")])
 
     # Add Return to Form Select button
@@ -478,6 +520,7 @@ async def select_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def enter_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     answer = update.message.text.strip()
+    await update.message.reply_text("⏳ Validating your input. Please wait...")
     question = user_session_data[user_id].get("current_question")
     form = user_session_data[user_id]["current_form"]
 
@@ -609,6 +652,7 @@ def is_all_form_data_complete(session: dict, form_definitions: dict) -> tuple[bo
 async def save_quit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    await query.edit_message_text("⏳ Saving your case...")
     user_id = query.from_user.id
     session = user_session_data.get(user_id)
     if session:
@@ -632,6 +676,7 @@ async def save_quit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def submit_and_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    await query.edit_message_text("⏳ Submitting your case and generating email report. Please wait...")
     user_id = query.from_user.id
     session = user_session_data.get(user_id)
 
@@ -667,6 +712,21 @@ async def submit_and_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.edit_message_text(missing_message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return SELECTING_FORM
+    
+        # ✅ Save to DB before sending email
+    case_id = session.get("case_id") or str(uuid.uuid4())
+    session["case_id"] = case_id
+
+    user_prompt = intent_dict["insert_into_db"]
+    form_types = {
+        form: {q: meta["type"] for q, meta in fields.items()}
+        for form, fields in form_definitions.items()
+    }
+    sql_dict = ast.literal_eval(dynamic_sql_agent(user_prompt, form_types))
+
+    for form_name in form_definitions.keys():
+        answers = session.get("forms", {}).get(form_name, {})
+        save_to_db_with_agent(user_id, form_name, case_id, answers, sql_dict)
 
     logger.info(f"✅ [User {user_id}] All fields complete. Proceeding with email.")
 
@@ -729,6 +789,7 @@ async def delete_case_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_delete_case(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    await query.edit_message_text("⏳ Deleting your case. Please wait...")
     user_id = query.from_user.id
     decision = query.data.split(":")[1]
 
@@ -744,14 +805,26 @@ async def confirm_delete_case(update: Update, context: ContextTypes.DEFAULT_TYPE
     case_id = session["case_id"]
 
     try:
+        # Prepare dynamic DELETE SQL
+        form_types = {
+            form: {q: meta["type"] for q, meta in fields.items()}
+            for form, fields in form_definitions.items()
+        }
+        sql_dict = ast.literal_eval(dynamic_sql_agent(intent_dict["delete_case_by_user_and_case_id"], form_types))
+        
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-
-        # Delete from all forms
-        for form in form_definitions:
-            c.execute(f"DELETE FROM {form} WHERE user = ? AND case_id = ?", (str(user_id), case_id))
-        conn.commit()
-        conn.close()
+        
+        try:
+            for form, sql in sql_dict.items():
+                c.execute(sql, (case_id, str(user_id)))  # Note: SQL should have WHERE user = ? AND case_id = ?
+            conn.commit()
+        except Exception as e:
+            logger.error(f"❌ Failed dynamic delete SQL: {e}", exc_info=True)
+            await query.edit_message_text("⚠️ Failed to delete case due to a system error.")
+            return SELECTING_FORM
+        finally:
+            conn.close()
 
         user_session_data.pop(user_id, None)
         await query.edit_message_text(f"🗑️ Case `{case_id[:8]}` has been permanently deleted.", parse_mode="Markdown")

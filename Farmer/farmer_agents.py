@@ -396,6 +396,10 @@ def validation_agent(question: str, answer: str, form_def: dict, form_val: dict)
         allow_delegation=False,
         llm=ChatOpenAI(model_name="gpt-4o")
     )
+    
+    # This used to be part of validator_task to include the context of the base validation, removed due to not detecting right amt of characters
+        # The base validation rule for this question is:
+        # - {validation_description}
 
     validator_task = Task(
         description=f"""
@@ -405,13 +409,12 @@ def validation_agent(question: str, answer: str, form_def: dict, form_val: dict)
         - **Question**: {prompt_question}
         - **Answer**: {answer}
 
-        The base validation rule for this question is:
-        - {validation_description}
-
         Please check if the answer is:
         1. Related to the question
-        2. Satisfies the base validation rule
-        3. Not suspicious, empty, or illogical
+        2. Not suspicious, empty, or illogical
+        
+        It is okay to let the answer be valid if there are mispellings and typographical errors whilst adhering to the above criteria
+        **Mispellings and typographical errors should not dictate if a answer is invalid**
 
         Return exactly one of:
         - ✅ Valid
@@ -446,13 +449,14 @@ def error_message_agent(question: str, answer: str, form_def: dict, form_val: di
         llm=ChatOpenAI(model_name="gpt-4o")
     )
 
+#        - **Validation Rule**: {validation_description}
+
     error_message_task = Task(
         description=f"""
         The user answered a form question, but their input was rejected.
 
         - **Question**: {prompt_question}
         - **Answer**: {answer}
-        - **Validation Rule**: {validation_description}
         - **Validator's Reason**: {validator_reason}
 
         Your job:
@@ -461,7 +465,7 @@ def error_message_agent(question: str, answer: str, form_def: dict, form_val: di
         - Suggest how to fix the answer, with examples if useful.
         - If the answer was fine, return 'valid'
 
-        Example output: "Your answer is too short. Please enter at least 10 characters like: 'fever, nasal discharge'"
+        Example output: "Your answer is too short. Please enter more information like: 'fever, nasal discharge'"
         """,
         expected_output="A friendly error message or 'valid'.",
         agent=error_response_agent
@@ -496,6 +500,7 @@ def spelling_correction_agent(text: str, question: str = "") -> str:
         Examples:
         - Input: "broiller" → Output: "broiler"
         - Input: "closed house" → Output: "closed house"
+        - Input: "no data/" → Output: "no data"
         - Input: "typo maybe?" (unsure) → Output: valid
         """,
         expected_output="Either 'valid' or the corrected string.",
