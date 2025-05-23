@@ -250,6 +250,63 @@ def generate_individual_case_summary(case_id):
 
     return case_summary_crew.kickoff()
 
+def generate_case_summary_for_email(case_id):
+    case_summary_task_description = """
+    You have been given the following results from SQL queries on case_id {case_id}. Your task is to generate a high-level summary of the following data. 
+    Limit your response to 2 sentences for each result.
+    Do not wrap the output in any code block or quotes.
+
+    --- SQL RESULTS ---
+    Farm Name:
+    {farm_name}
+
+    Flock Farm Information Form Results:
+    {flock_farm_information_results}
+
+    Symptoms Performance Data Form Results:
+    {symptoms_performance_data_results}
+
+    Medical Diagnostic Records Form Results:
+    {medical_diagnostic_records_results}
+
+    Farmer's Problem:
+    {farmer_problem_results}
+
+    Format the output as follows:
+    "Farm Name: <farm_name>\n"
+    "Flock Farm Information: <short summary>\n"
+    "Symptoms Performance: <short summary>\n"
+    "Medical Diagnostic Records: <short summary>\n"
+    "Farmer's Problem: <short summary>\n"
+    """
+
+    execution_results_for_case_summary = generate_and_execute_sql(action_type='case_summary', case_id=case_id, schema=schema)
+
+    # Generate the formatted report using the results from the SQL execution
+    case_summary_task_description_filled = case_summary_task_description.format(
+        case_id=case_id,
+        farm_name=execution_results_for_case_summary.get('issues', 'No data available.'),
+        flock_farm_information_results=execution_results_for_case_summary.get('flock_farm_information', 'No data available.'),
+        symptoms_performance_data_results=execution_results_for_case_summary.get('symptoms_performance_data', 'No data available.'),
+        medical_diagnostic_records_results=execution_results_for_case_summary.get('medical_diagnostic_records', 'No data available.'),
+        farmer_problem_results=execution_results_for_case_summary.get('farmer_problem', 'No data available.')
+    )
+
+    case_summary_task = Task(
+            description=case_summary_task_description_filled,
+            agent=report_generation_agent,
+            expected_output=f"Concise natural language summaries of the forms for case_id {case_id}.",
+            output_file="case_summary_for_email.txt"
+        )
+
+    case_summary_crew = Crew(
+        agents=[report_generation_agent],
+        tasks=[case_summary_task],
+        verbose=True
+    )
+
+    return case_summary_crew.kickoff()
+
 def generate_report_for_forms(case_id):
     report_task_description = """
     You have been given the following results from SQL queries on case_id {case_id}. Your task is to generate a comprehensive report including the data from the forms.
@@ -416,10 +473,12 @@ def check_case_exists(case_id: str) -> bool:
 def execute_case_closing(case_id: str, reason: str) -> str:
     """Close a case using CrewAI's task execution flow."""
     close_task = Task(
-        description=f"Close case {case_id} with the close_reason as: {reason} in the issues table.",
+        description=
+        f"The case_id provided is only the first 8 characters of the case_id, so write queries using: case_id LIKE ? and ensure the placeholder ? will be replaced with '<value>%'. \
+        Close case {case_id} with the close_reason as: {reason} in the issues table.",
         agent=status_update_agent,
         tools=[sqlite_tool],
-        expected_output="Case closed confirmation"
+        expected_output="Confirmation that the case has been closed. Give a simple explanation, don't mention '8 character case_id'."
     )
 
     crew = Crew(
@@ -432,7 +491,9 @@ def execute_case_closing(case_id: str, reason: str) -> str:
 def execute_case_escalation(case_id: str) -> str:
     """Escalate a case using CrewAI's task execution flow."""
     escalate_task = Task(
-        description=f"Update the 'assigned_team' field to 'Technical' for case ID {case_id} in the 'issues' table.",
+        description=
+        f"The case_id provided is a partial UUID (first 8 characters only), so write queries using: case_id LIKE ? and ensure the placeholder ? will be replaced with '<value>%'. \
+        Update the 'assigned_team' field to 'Technical' for case ID {case_id} in the 'issues' table.",
         agent=status_update_agent,
         tools=[sqlite_tool],
         expected_output="Confirmation that the case has been escalated to the Technical team."

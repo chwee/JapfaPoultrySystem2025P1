@@ -64,6 +64,7 @@ status_update_agent = Agent(
     role="Status Update Agent",
     goal="Help Sales/Technical team mark issues as 'Closed' or assigned_team as 'Technical'.",
     backstory="An expert in updating issue statuses and generating appropriate SQL queries to reflect changes.",
+    verbose=True,
     allow_delegation=False,
     tools=[sqlite_tool],
     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)
@@ -78,6 +79,15 @@ report_generation_agent = Agent(
     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.3)
 )
 
+def convert_placeholders(sql_query):
+    count = 1
+    def replacer(match):
+        nonlocal count
+        replacement = f"${count}"
+        count += 1
+        return replacement
+    return re.sub(r'\?', replacer, sql_query)
+
 # TASKS
 def generate_and_execute_sql(schema: str, action_type: str = None, case_id: int = None, 
                              user_input:str = None, file_path:str = None, file_name:str = None) -> dict:
@@ -88,11 +98,11 @@ def generate_and_execute_sql(schema: str, action_type: str = None, case_id: int 
         elif action_type == "generate_report":
             user_input = f"Generate a full report for case ID {case_id}."
         elif action_type == "view_all_issues":
-            user_input = "Retrieve ALL issues, regardless of their status from the issues table."
+            user_input = "Retrieve ALL issue cases, regardless of their status from the issues table. No need to care about case_id."
         elif action_type == "insert_attachment":
             if not (case_id , file_path and file_name):
                 raise ValueError("case_id, file_path and file_name are required for inserting attachment.")
-            user_input = f"Insert a new attachment for case_id {case_id} with file_path as '{file_path}' and file_name as '{file_name}' into the issue_attachments table."
+            user_input = f"Fetch the full case_id of {case_id} from issues table. Then, insert a new attachment for the retrieved full case_id with the file_path and file_name into the issue_attachments table."
         else:
             raise ValueError("Unknown action_type")
     
@@ -106,8 +116,7 @@ You are an SQL generation agent. Your job is to generate **parameterized SQL** s
 Instructions:
 - Use the known form schemas listed below.
 - Check all tables listed.
-- The case_id provided is a partial UUID (first 8 characters only), so write queries using: case_id LIKE ? and ensure the placeholder ? will be replaced with '<value>%'.
-- Replace placeholders with provided values.
+- The case_id provided is a partial UUID (first 8 characters only), so write ALL queries using: case_id LIKE ? and ensure the placeholder ? will be replaced with '<value>%'.
 - ALWAYS fetch the farm_name in the issues table.
 - Do NOT return explanations, only the SQL queries.
 - Return the output in **JSON format** with keys as table names and values as SQL strings.
@@ -154,20 +163,28 @@ Final Output Format (**EXAMPLE**):
 
     for table, query in sql_queries.items():
         try:
-            # If you have a case_id parameter to inject, replace placeholder in query
-            if case_id is not None:
-                formatted_query = query.replace("?", f"'%{case_id}%'")
+            if action_type == "insert_attachment" and table == "issue_attachments":
+                full_case_id_result = execution_results.get("issues")
+                if full_case_id_result and isinstance(full_case_id_result, list) and len(full_case_id_result) > 0:
+                    full_case_id = full_case_id_result[0]["case_id"]
+                    params = [full_case_id, file_name, file_path]
+                else:
+                    print("Could not retrieve full case_id from issues query.")
+                    continue
             else:
-                formatted_query = query
+                params = [f"{case_id}%"]
 
-            # Call the run_sql RPC function with the formatted query
-            response = supabase_client.rpc("run_sql", {"query": formatted_query}).execute()
+            formatted_query = convert_placeholders(query)
+            print("Executing query:", formatted_query)
+            print("With params:", params)
 
-            # Extract data from response
-            if response.data:
-                execution_results[table] = response.data  # Already a list of dicts (json_agg)
-            else:
-                execution_results[table] = []
+            rpc_args = {"query": formatted_query}
+            for i, param in enumerate(params, start=1):
+                rpc_args[f"param{i}"] = param
+
+            response = supabase_client.rpc("run_sql", rpc_args).execute()
+
+            execution_results[table] = response.data if response.data else []
 
         except Exception as e:
             execution_results[table] = f"Error executing query: {e}"
@@ -464,8 +481,12 @@ def generate_summary_of_all_issues():
 # Task for Status Update
 def check_case_exists(case_id: str) -> bool:
     try:
-        # Check if the case_id exists in your case-related table (assuming 'issues' table here)
-        response = supabase_client.table("issues").select("id", count="exact").eq("case_id", case_id).execute()
+        # Use LIKE to match first 8 characters of case_id
+        response = supabase_client.table("issues") \
+            .select("id", count="exact") \
+            .like("case_id", f"{case_id}%") \
+            .execute()
+        
         return response.count > 0
     
     except Exception as e:
@@ -475,10 +496,12 @@ def check_case_exists(case_id: str) -> bool:
 def execute_case_closing(case_id: str, reason: str) -> str:
     """Close a case using CrewAI's task execution flow."""
     close_task = Task(
-        description=f"Close case {case_id} with the close_reason as: {reason} in the issues table.",
+        description=
+        f"The case_id provided is only the first 8 characters of the case_id, so write queries using: case_id LIKE ? and ensure the placeholder ? will be replaced with '<value>%'. \
+        Close case {case_id} with the close_reason as: {reason} in the issues table.",
         agent=status_update_agent,
         tools=[sqlite_tool],
-        expected_output="Case closed confirmation"
+        expected_output="Confirmation that the case has been closed. Give a simple explanation, don't mention '8 character case_id'."
     )
 
     crew = Crew(
@@ -491,7 +514,9 @@ def execute_case_closing(case_id: str, reason: str) -> str:
 def execute_case_escalation(case_id: str) -> str:
     """Escalate a case using CrewAI's task execution flow."""
     escalate_task = Task(
-        description=f"Update the 'assigned_team' field to 'Technical' for case ID {case_id} in the 'issues' table.",
+        description=
+        f"The case_id provided is a partial UUID (first 8 characters only), so write queries using: case_id LIKE ? and ensure the placeholder ? will be replaced with '<value>%'. \
+        Update the 'assigned_team' field to 'Technical' for case ID {case_id} in the 'issues' table.",
         agent=status_update_agent,
         tools=[sqlite_tool],
         expected_output="Confirmation that the case has been escalated to the Technical team."

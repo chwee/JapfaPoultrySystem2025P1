@@ -10,7 +10,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
-from sales_crew import (
+from Sales.sales_crew import (
     execute_case_closing,
     check_case_exists,
     generate_individual_case_summary,
@@ -166,6 +166,25 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Action cancelled. Returning to the main menu.")
     await show_main_menu(update)
 
+# /generate_dynamic_report command
+async def generate_dynamic_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_state[user_id] = {"action": "dynamic_report", "step": "awaiting_prompt"}
+    await update.message.reply_text(
+    "Type your prompt to generate a report.\n"
+    "Send /exit to return to the main menu."
+    )
+
+# /exit command for dynamic report
+async def exit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id in user_state and user_state[user_id].get("action") == "dynamic_report":
+        user_state.pop(user_id, None)
+        await update.message.reply_text("🚪 Exiting dynamic report mode.")
+        await show_main_menu(update)
+    else:
+        await update.message.reply_text("❓ You are not in dynamic report mode.")
+
 # Button interactions
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -202,29 +221,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     user_input = update.message.text.strip()
-
-    if user_id not in user_state:
-        case_match = re.search(r"\bcase(?:[\s_]*id)?[:\s#]*?([0-9a-fA-F]{8})\b", user_input, re.IGNORECASE)
-        case_id = case_match.group(1) if case_match else None
-
-        await update.message.reply_text("🔍 Processing your request...")
-
-        try:
-            result = generate_and_execute_sql(schema=schema, user_input=user_input, case_id=case_id)
-            report =  generate_report_from_prompt(result, case_id=case_id)
-
-            if not result:
-                await update.message.reply_text("⚠️ No data found or unable to generate query.")
-                return
-            
-            await update.message.reply_text("📝 Here's the report:")
-            await update.message.reply_text(f"<pre>{report}</pre>", parse_mode="HTML")
-
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
-        await show_main_menu(update)
-        return
 
     if user_id not in user_state:
         await update.message.reply_text("❓ Please choose an action first using the menu.")
@@ -314,6 +310,28 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = generate_report_for_forms(case_id)
         await update.message.reply_text(f"<pre>{result}</pre>", parse_mode="HTML")
         await show_main_menu(update)
+    
+    elif state["action"] == "dynamic_report":        
+        if state["step"] == "awaiting_prompt":
+            user_prompt = user_input
+
+            try:
+                case_match = re.search(r"\bcase(?:[\s_]*id)?[:\s#]*?([0-9a-fA-F]{8})\b", user_input, re.IGNORECASE)
+                case_id = case_match.group(1) if case_match else None
+
+                await update.message.reply_text("⏳ Generating report from your prompt...")
+
+                result = generate_and_execute_sql(schema=schema, user_input=user_prompt, case_id=case_id)
+                report = generate_report_from_prompt(result, case_id=case_id)
+
+                await update.message.reply_text("📝 Here's the report:")
+                await update.message.reply_text(f"<pre>{report}</pre>", parse_mode="HTML")
+
+            except Exception as e:
+                await update.message.reply_text(f"❌ Failed to generate dynamic report: {e}")
+
+            # 🔁 Do NOT pop user_state so user stays in dynamic mode
+            await update.message.reply_text("Type a new prompt or /exit to leave.")
 
     else:
         await update.message.reply_text("⚠️ Unknown action. Please try again.")
@@ -329,6 +347,8 @@ def run_telegram_bot():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("generate_dynamic_report", generate_dynamic_report_command))
+    app.add_handler(CommandHandler("exit", exit_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, case_id_handler))
     app.add_error_handler(error)

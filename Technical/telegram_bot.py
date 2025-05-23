@@ -8,7 +8,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
-from technical_crew import run_upload_analysis
+from technical_crew import run_upload_analysis, upload_file_to_supabase
 from Sales.sales_crew import (
     execute_case_closing,
     check_case_exists,
@@ -71,6 +71,25 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Action cancelled. Returning to the main menu.")
     await show_main_menu(update)
 
+# /generate_dynamic_report command
+async def generate_dynamic_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_state[user_id] = {"action": "dynamic_report", "step": "awaiting_prompt"}
+    await update.message.reply_text(
+    "Type your prompt to generate a report.\n"
+    "Send /exit to return to the main menu."
+    )
+
+# /exit command for dynamic report
+async def exit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id in user_state and user_state[user_id].get("action") == "dynamic_report":
+        user_state.pop(user_id, None)
+        await update.message.reply_text("🚪 Exiting dynamic report mode.")
+        await show_main_menu(update)
+    else:
+        await update.message.reply_text("❓ You are not in dynamic report mode.")
+
 # Button interactions
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -105,32 +124,16 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
 
     if user_id not in user_state:
-        case_match = re.search(r"\bcase(?:[\s_]*id)?[:\s#]*?([0-9a-fA-F]{8})\b", user_input, re.IGNORECASE)
-        case_id = case_match.group(1) if case_match else None
-
-        await update.message.reply_text("🔍 Processing your request...")
-
-        try:
-            result = generate_and_execute_sql(schema=schema, user_input=user_input, case_id=case_id)
-            report = generate_report_from_prompt(result, case_id=case_id)
-
-            if not result:
-                await update.message.reply_text("⚠️ No data found or unable to generate query.")
-                return
-
-            await update.message.reply_text("📝 Here's the report:")
-            await update.message.reply_text(f"<pre>{report}</pre>", parse_mode="HTML")
-
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-
+        await update.message.reply_text("❓ Please choose an action first using the menu.")
         await show_main_menu(update)
         return
-
+    
     state = user_state[user_id]
 
     if state["action"] == "closing_case":
         if state["step"] == "awaiting_case_id":
+            case_id = user_input.strip()
+            
             if not re.fullmatch(r"[0-9a-fA-F]{8}", case_id):
                 await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
                 return
@@ -187,6 +190,28 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"<pre>{result}</pre>", parse_mode="HTML")
         await show_main_menu(update)
 
+    elif state["action"] == "dynamic_report":        
+        if state["step"] == "awaiting_prompt":
+            user_prompt = user_input
+
+            try:
+                case_match = re.search(r"\bcase(?:[\s_]*id)?[:\s#]*?([0-9a-fA-F]{8})\b", user_input, re.IGNORECASE)
+                case_id = case_match.group(1) if case_match else None
+
+                await update.message.reply_text("⏳ Generating report from your prompt...")
+
+                result = generate_and_execute_sql(schema=schema, user_input=user_prompt, case_id=case_id)
+                report = generate_report_from_prompt(result, case_id=case_id)
+
+                await update.message.reply_text("📝 Here's the report:")
+                await update.message.reply_text(f"<pre>{report}</pre>", parse_mode="HTML")
+
+            except Exception as e:
+                await update.message.reply_text(f"❌ Failed to generate dynamic report: {e}")
+
+            # 🔁 Do NOT pop user_state so user stays in dynamic mode
+            await update.message.reply_text("Type a new prompt or /exit to leave.")
+
     else:
         await update.message.reply_text("⚠️ Unknown action. Please try again.")
         await show_main_menu(update)
@@ -206,84 +231,66 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
 
     file = await context.bot.get_file(document.file_id)
     file_name = document.file_name
+    local_file_path = os.path.join(UPLOAD_DIR, file_name)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    file_path = os.path.join(UPLOAD_DIR, file_name)
+
     try:
-        await file.download_to_drive(file_path)
+        await file.download_to_drive(local_file_path)
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download the file: {e}")
         return
 
-    await update.message.reply_text("📄 File received. Analyzing...")
+    await update.message.reply_text("📄 File received. Running analysis...")
 
     try:
-        raw_output = run_upload_analysis(user_data["case_id"], file_path)
+        # Upload to Supabase and get the public URL
+        uploaded_file_name, supabase_file_url = upload_file_to_supabase(local_file_path)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to upload to Supabase: {e}")
+        return
 
-        # Check if json_dict exists
+    try:
+        # Run relevance analysis using local file (for content extraction)
+        raw_output = run_upload_analysis(user_data["case_id"], local_file_path, uploaded_file_name, supabase_file_url)
+
         if raw_output.json_dict:
             analysis_result = raw_output.json_dict
-
-            # Access the fields
-            is_relevant = analysis_result.get("is_relevant", False)
-            explanation = analysis_result.get("explanation", "No explanation provided by the analysis system.")
-            
-            if not is_relevant:
-                await update.message.reply_text(
-                    f"⚠️ The uploaded file is *not relevant* to Case ID {user_data['case_id']}. Case closure aborted.\n\n📄 Explanation: {explanation}",
-                    parse_mode="Markdown"
-                )
-                return
-
-            await update.message.reply_text(
-                f"✅ File is relevant to Case ID {user_data['case_id']}.\n\n📄 Explanation: {explanation}\n\n🚪 Proceeding to close the case..."
-            )
-
-            # Proceed to close the case after checking relevance
-            reason = user_data.get("reason", "No reason provided.")
-            try:
-                result = execute_case_closing(user_data["case_id"], reason)
-                await update.message.reply_text(f"✅ Case closed successfully: {result}")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Case closure failed: {e}")
-
         else:
-            # Fallback: Check if raw_output contains a valid JSON string
             raw_data = raw_output.raw
-            print(f"DEBUG: Raw data for analysis: {raw_data}")
+            analysis_result = json.loads(raw_data)
 
-            try:
-                analysis_result = json.loads(raw_data)
-                print(f"DEBUG: Analysis result (raw output): {analysis_result}")
+        is_relevant = analysis_result.get("is_relevant", False)
+        explanation = analysis_result.get("explanation", "No explanation provided by the analysis system.")
 
-                is_relevant = analysis_result.get("is_relevant", False)
-                explanation = analysis_result.get("explanation", "No explanation provided by the analysis system.")
+        if not is_relevant:
+            await update.message.reply_text(
+                f"⚠️ The uploaded file is *not relevant* to Case ID {user_data['case_id']}. Case closure aborted.\n\n📄 Explanation: {explanation}",
+                parse_mode="Markdown"
+            )
+            return
 
-                if not is_relevant:
-                    await update.message.reply_text(
-                        f"⚠️ The uploaded file is *not relevant* to Case ID {user_data['case_id']}. Case closure aborted.\n\n📄 Explanation: {explanation}",
-                        parse_mode="Markdown"
-                    )
-                    return
+        await update.message.reply_text(
+            f"✅ File is relevant to Case ID {user_data['case_id']}.\n\n📄 Explanation: {explanation}\n\n🚪 Proceeding to close the case..."
+        )
 
-                await update.message.reply_text(
-                    f"✅ File is relevant to Case ID {user_data['case_id']}.\n\n📄 Explanation: {explanation}\n\n🚪 Proceeding to close the case..."
-                )
+        reason = user_data.get("reason", "No reason provided.")
+        try:
+            result = execute_case_closing(user_data["case_id"], reason)
+            await update.message.reply_text(f"✅ Case closed successfully: {result}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Case closure failed: {e}")
 
-                # Proceed to close the case after checking relevance
-                reason = user_data.get("reason", "No reason provided.")
-                try:
-                    result = execute_case_closing(user_data["case_id"], reason)
-                    await update.message.reply_text(f"✅ Case closed successfully: {result}")
-                except Exception as e:
-                    await update.message.reply_text(f"❌ Case closure failed: {e}")
-            except json.JSONDecodeError:
-                await update.message.reply_text("❌ Error: The raw output is not a valid JSON.")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Unexpected error: {e}")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Error during analysis or closure: {e}")
+    except json.JSONDecodeError:
+        await update.message.reply_text("❌ Error: The raw output is not a valid JSON.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error during analysis or closure: {e}")
     finally:
+        # Clean up state and local file
         user_state.pop(user_id, None)
+        try:
+            os.remove(local_file_path)
+        except Exception:
+            pass
         await show_main_menu(update)
 
 async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -294,6 +301,8 @@ def run_telegram_bot():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("generate_dynamic_report", generate_dynamic_report_command))
+    app.add_handler(CommandHandler("exit", exit_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, case_id_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document_upload))

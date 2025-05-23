@@ -1,11 +1,10 @@
 from langchain_community.document_loaders import TextLoader, PyPDFLoader
 import os
-import sqlite3
-import json
 from datetime import datetime
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew
-from Sales.streamlit_crew import generate_and_execute_sql
+from supabase import create_client, Client
+from Sales.sales_crew import generate_and_execute_sql
 
 # === CONFIGURATION ===
 UPLOAD_DIR = "uploads"
@@ -14,6 +13,9 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 schema = """
 Tables:
@@ -26,17 +28,6 @@ Tables:
 - issue_attachments(id, case_id, file_name, file_path, uploaded_at)
 """
 
-# === DATABASE UTILS ===
-# def save_attachment(case_id, file_name, file_path):
-#     conn = sqlite3.connect(DB_PATH)
-#     cursor = conn.cursor()
-#     cursor.execute(
-#         "INSERT INTO issue_attachments (case_id, file_name, file_path) VALUES (?, ?, ?)",
-#         (case_id, file_name, file_path)
-#     )
-#     conn.commit()
-#     conn.close()
-
 # === FILE PROCESSING ===
 def extract_text(file_path):
     # Implement text extraction based on file type (e.g., PDF or plain text)
@@ -47,6 +38,16 @@ def extract_text(file_path):
     docs = loader.load()
     return "\n".join([doc.page_content for doc in docs])[:3000]
 
+def upload_file_to_supabase(file_path, bucket_name="issue-attachments"):
+    file_name = os.path.basename(file_path)
+    with open(file_path, "rb") as f:
+        data = f.read()
+        res = supabase.storage.from_(bucket_name).upload(file_name, data, {"content-type": "application/octet-stream"})
+    
+    # Get the public URL
+    public_url = supabase.storage.from_(bucket_name).get_public_url(file_name)
+    return file_name, public_url
+
 # === AGENTS AND TASKS ===
 relevance_agent = Agent(
     role="Relevance Checker",
@@ -56,10 +57,10 @@ relevance_agent = Agent(
     allow_delegation=False
 )
 
-def run_upload_analysis(case_id, file_path):
-    file_name = os.path.basename(file_path)
-    file_text = extract_text(file_path)
-    generate_and_execute_sql(schema=schema, action_type="insert_attachment", case_id=case_id, file_path=file_path, file_name=file_name)
+def run_upload_analysis(case_id, local_file_path, file_name, file_url):
+    file_text = extract_text(local_file_path)
+    print("Storing:", file_url, file_name)
+    generate_and_execute_sql(schema=schema, action_type="insert_attachment", case_id=case_id, file_path=file_url, file_name=file_name)
 
     # Adjust task to expect structured response
     relevance_task = Task(
