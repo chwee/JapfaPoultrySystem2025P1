@@ -2,6 +2,8 @@ import logging
 import os
 import re
 import smtplib
+import asyncio
+import nest_asyncio
 from email.message import EmailMessage
 from langchain_openai import ChatOpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,7 +12,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
-from sales_crew import (
+from Sales.sales_crew import (
     execute_case_closing,
     check_case_exists,
     generate_individual_case_summary,
@@ -355,18 +357,22 @@ async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Launch bot
 def run_telegram_bot():
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    async def main():
+        app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cancel", cancel))
-    app.add_handler(CommandHandler("generate_dynamic_report", generate_dynamic_report_command))
-    app.add_handler(CommandHandler("exit", exit_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, case_id_handler))
-    app.add_error_handler(error)
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("cancel", cancel))
+        app.add_handler(CommandHandler("generate_dynamic_report", generate_dynamic_report_command))
+        app.add_handler(CommandHandler("exit", exit_command))
+        app.add_handler(CallbackQueryHandler(button_handler))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, case_id_handler))
+        app.add_error_handler(error)
 
-    print("🚀 Bot is running...")
-    app.run_polling()
+        print("🚀 Bot is running...")
+        await app.run_polling()
+
+    nest_asyncio.apply()
+    asyncio.get_event_loop().run_until_complete(main())
 
 if __name__ == '__main__':
     run_telegram_bot()

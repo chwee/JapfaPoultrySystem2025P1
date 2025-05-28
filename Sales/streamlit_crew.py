@@ -47,7 +47,6 @@ Tables:
 - medical_diagnostic_records(id, case_id, vaccination_history, lab_data, pathology_findings_necropsy, current_treatment, management_questions, timestamp)
 - issues(id, title, description, farm_name, status, close_reason, assigned_team, case_id, created_at, updated_at)
 - farmer_problem(id, case_id, problem_description, timestamp)
-- notifications(id, recipient_team, message, sent_at)
 - issue_attachments(id, case_id, file_name, file_path, uploaded_at)
 """
 
@@ -159,8 +158,6 @@ Final Output Format (**EXAMPLE**):
             # If you have a case_id parameter to inject, replace placeholder in query
             if case_id is not None:
                 formatted_query = query.replace("?", f"'%{case_id}%'")
-            else:
-                formatted_query = query
 
             # Call the run_sql RPC function with the formatted query
             response = supabase_client.rpc("run_sql", {"query": formatted_query}).execute()
@@ -176,7 +173,110 @@ Final Output Format (**EXAMPLE**):
 
     return execution_results
 
-def generate_report_from_prompt(execution_results, case_id):
+def generate_and_execute_sql_prompt(schema: str, filters:dict, user_input:str = None) -> dict:
+    
+    case_id = filters.get("case_id")
+    filter_descriptions = []
+    for key, value in filters.items():
+        if value == "__NULL__":
+            filter_descriptions.append(f"{key} is NULL")
+        else:
+            filter_descriptions.append(f"{key} = '{value}'")
+    filter_text = " and ".join(filter_descriptions)
+
+    filter_text = json.dumps(filters, indent=2)  # Dict passed as JSON to LLM
+    
+    sql_prompt = f"""
+You are an SQL generation agent. Your job is to generate **parameterized SQL** statements to fulfill the following task:
+
+--- USER INPUT ---
+"{user_input}"
+------------------
+
+--- EXTRACTED FILTERS ---
+{filter_text}
+-------------------------
+
+Instructions:
+- Use the known form schemas listed below.
+- Check all tables listed.
+- No need to include case id everytime, only include it if it is mentioned in the filters.
+- The case_id provided is a partial UUID (first 8 characters only), so write queries using: case_id LIKE ? and ensure the placeholder ? will be replaced with '<value>%'.
+- If the value is "__NULL__", generate SQL like: column_name IS NULL 
+- For ALL filters (like symptoms, farm_name, location, etc), use: column_name LIKE '%value%' to allow partial matches.
+- For numeric or exact-match fields, use: column_name = ?
+- Replace placeholders with provided values.
+- Do NOT return explanations, only the SQL queries.
+- Return the output in **JSON format** with keys as table names and values as SQL strings.
+- Use lowercase snake_case field names exactly as defined in the schema (not display labels).
+
+--- FORM SCHEMA ---
+{schema}
+-------------------
+
+Final Output Format (**EXAMPLE**):
+
+```json
+{{
+  "biosecurity_form": "SELECT * FROM biosecurity_form WHERE case_id = ? AND farm_location IS NOT NULL AND farm_location != '' ...",
+  "mortality_form": "...",
+  "health_status_form": "...",
+  "farmer_problem": "..."
+}}
+"""
+    sql_task = Task(
+    description=sql_prompt,
+    agent=sql_agent,
+    expected_output="JSON with parameterized SQL"
+    )
+    
+    crew = Crew(agents=[sql_agent], tasks=[sql_task], verbose=True)
+    result = crew.kickoff()
+    print("SQL Generation Result:\n", result)
+
+    # Extract JSON from output
+    match = re.search(r'\{[\s\S]*\}', str(result))
+    if not match:
+        print("No JSON found in output.")
+        return {}
+
+    try:
+        sql_queries = json.loads(match.group(0))
+    except json.JSONDecodeError as e:
+        print("Failed to parse SQL JSON:", e)
+        return {}
+
+    # Execute queries
+    execution_results = {}
+
+    for table, query in sql_queries.items():
+        try:
+            # If you have a case_id parameter to inject, replace placeholder in query
+            formatted_query = query
+            for value in filters.values():
+                if value == "__NULL__":
+                    continue  # Handled in SQL directly
+                formatted_query = formatted_query.replace("?", f"'{value}'", 1)
+                print(f"FORMATTED QUERY for {table}: {formatted_query}")
+
+            # Call the run_sql RPC function with the formatted query
+            response = supabase_client.rpc("run_sql", {"query": formatted_query}).execute()
+
+            # Extract data from response
+            if response.data:
+                execution_results[table] = response.data  # Already a list of dicts (json_agg)
+            else:
+                execution_results[table] = []
+
+        except Exception as e:
+            execution_results[table] = f"Error executing query: {e}"
+
+    return execution_results
+
+def generate_report_from_prompt(execution_results, filters):
+    case_id = filters.get("case_id", "N/A")
+    farm_name = filters.get("farm_name", "N/A")
+
     report_prompt = f"""
     Your task is to write a professional, human-readable report summarizing the key findings from the data.
 
@@ -188,7 +288,6 @@ def generate_report_from_prompt(execution_results, case_id):
     - Do not include raw SQL or technical field names.
 
     Raw Data:
-    Case ID: {case_id}
     {json.dumps(execution_results, indent=2)}
     """
 
