@@ -8,9 +8,9 @@ from Sales.streamlit_crew import (
     generate_and_execute_sql,
     execute_case_closing,
     execute_case_escalation,
-    generate_case_summary_for_email
+    generate_case_summary_for_email,
+    send_escalation_email
 )
-from Sales.telegram_app import send_escalation_email
 
 schema = """
 Tables:
@@ -117,7 +117,7 @@ elif main_action == "Close Case":
 elif main_action == "Escalate Case":
     st.subheader("Escalate a Case")
     case_id_to_escalate = st.text_input("Enter Case ID to Escalate")
-    escalation_reason = st.text_area("Enter Reason for Escalation")
+    escalation_reason = st.text_input("Enter Reason for Escalation")
 
     if st.button("Escalate Case"):
         if case_id_to_escalate and escalation_reason:

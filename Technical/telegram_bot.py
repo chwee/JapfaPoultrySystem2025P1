@@ -39,7 +39,7 @@ Tables:
 - issue_attachments(id, case_id, file_name, file_path, uploaded_at)
 """
 
-TELEGRAM_BOT_TOKEN = "7255871993:AAHG_tVO9yXXazo47mAmFruSOxlPwsqXSEE"
+TELEGRAM_BOT_TOKEN = os.getenv("TECH_TELE_BOT")
 user_state = {}
 
 def get_main_menu_buttons():
@@ -128,12 +128,16 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update)
         return
     
+    if not user_input:
+        await update.message.reply_text("❗ Input cannot be empty. Please try again.")
+        return
+    
     state = user_state[user_id]
 
     if state["action"] == "closing_case":
         if state["step"] == "awaiting_case_id":
             case_id = user_input.strip()
-            
+
             if not re.fullmatch(r"[0-9a-fA-F]{8}", case_id):
                 await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
                 return
@@ -173,6 +177,10 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
             return
         
+        if not check_case_exists(case_id):
+            await update.message.reply_text(f"❌ Case ID {case_id} does not exist, please try again.")
+            return
+        
         await update.message.reply_text("⏳ Generating case summary...")
         result = generate_individual_case_summary(case_id)
         await update.message.reply_text(f"<pre>{result}</pre>", parse_mode="HTML")
@@ -183,6 +191,10 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not re.fullmatch(r"[0-9a-fA-F]{8}", case_id):
             await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
+            return
+        
+        if not check_case_exists(case_id):
+            await update.message.reply_text(f"❌ Case ID {case_id} does not exist, please try again.")
             return
         
         await update.message.reply_text("⏳ Generating full report...")

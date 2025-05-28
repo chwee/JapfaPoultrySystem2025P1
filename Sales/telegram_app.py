@@ -10,7 +10,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
-from Sales.sales_crew import (
+from sales_crew import (
     execute_case_closing,
     check_case_exists,
     generate_individual_case_summary,
@@ -39,7 +39,7 @@ Tables:
 - issue_attachments(id, case_id, file_name, file_path, uploaded_at)
 """
 
-TELEGRAM_BOT_TOKEN = "7020100788:AAHwAgmmocZHULAdthkhzI7vMxbks3G8NVs"
+TELEGRAM_BOT_TOKEN = os.getenv("SALES_TELE_BOT")
 EMAIL_PASSKEY = os.getenv("EMAIL_PASSKEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -223,8 +223,12 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
 
     if user_id not in user_state:
-        await update.message.reply_text("❓ Please choose an action first using the menu.")
+        await update.message.reply_text("❗ Please choose an action first using the menu.")
         await show_main_menu(update)
+        return
+    
+    if not user_input:
+        await update.message.reply_text("❗ Input cannot be empty. Please try again.")
         return
 
     state = user_state[user_id]
@@ -292,6 +296,10 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not re.fullmatch(r"[0-9a-fA-F]{8}", case_id):
             await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
             return
+
+        if not check_case_exists(case_id):
+            await update.message.reply_text(f"❌ Case ID {case_id} does not exist.")
+            return
         
         await update.message.reply_text("⏳ Generating case summary...")
         result = generate_individual_case_summary(case_id)
@@ -304,6 +312,10 @@ async def case_id_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not re.fullmatch(r"[0-9a-fA-F]{8}", case_id):
             await update.message.reply_text("❗ Invalid Case ID format. Please enter the first 8 characters of the case ID.")
+            return
+
+        if not check_case_exists(case_id):
+            await update.message.reply_text(f"❌ Case ID {case_id} does not exist.")
             return
         
         await update.message.reply_text("⏳ Generating full report...")
